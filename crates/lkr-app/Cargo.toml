@@ -1,0 +1,17 @@
+[package]
+name = "lkr-app"
+description = "Tauri menu bar app for LLM Key Ring"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+
+[dependencies]
+lkr-core = { path = "../lkr-core" }
+serde = { workspace = true }
+serde_json = { workspace = true }
+tauri = { version = "2", features = ["tray-icon"] }
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
