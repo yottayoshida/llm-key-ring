@@ -5,7 +5,7 @@ pub mod usage;
 
 pub use error::{Error, Result};
 pub use keymanager::{KeyEntry, KeyKind, KeyStore, KeychainStore, mask_value};
-pub use template::{generate, check_gitignore, GenResult, Resolution};
+pub use template::{generate, check_gitignore, key_to_env_var, GenResult, Resolution};
 pub use usage::{CostReport, CostLineItem, UsageCache, fetch_cost, available_providers, format_cost};
 pub use zeroize::Zeroizing;
 

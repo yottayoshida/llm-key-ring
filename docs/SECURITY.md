@@ -12,7 +12,7 @@ and the design decisions behind each mitigation.
 | T2 | Shell history exposure | High | `lkr set` reads via hidden prompt (rpassword), never accepts key as CLI argument | Implemented |
 | T3 | Clipboard residual | Medium | 30s auto-clear via detached background process; hash comparison prevents clearing user's own clipboard | Implemented |
 | T4 | Terminal display leakage | Medium | Default masked output (`sk-p...wxyz`); `--show` required for plaintext | Implemented |
-| T5 | Agent IDE key exfiltration (Antigravity-style) | High | TTY guard blocks `--plain`/`--show` in non-interactive environments | Implemented |
+| T5 | Agent IDE key exfiltration (Antigravity-style) | High | TTY guard blocks `--plain`/`--show` AND clipboard copy in non-interactive environments; `lkr exec` for safe automation | Implemented |
 | T6 | Memory dump / core dump | Medium | `zeroize::Zeroizing<String>` zeroes memory on drop | Implemented |
 | T7 | Admin key misuse via templates | Medium | `lkr gen` only resolves `runtime` keys; `admin` keys are rejected | Implemented |
 | T8 | Generated file committed to Git | Medium | `.gitignore` check warning on `lkr gen` output | Implemented |
@@ -31,19 +31,29 @@ secrets, exfiltrating API keys through the AI agent's context window.
 Malicious prompt injection → AI agent executes → lkr get openai:prod --plain → key exfiltrated via agent context
 ```
 
-**Mitigations**:
+**Mitigations** (three layers):
 
-1. **TTY Guard** (`--plain` / `--show` blocked in non-interactive environments):
+1. **TTY Guard — stdout blocked** (`--plain` / `--show` rejected in non-interactive environments):
    - `std::io::IsTerminal` checks whether stdout is a terminal
    - If not a TTY (pipe, agent subprocess), `--plain` and `--show` are rejected with exit code 2
    - `--force-plain` provides explicit override with warning (user accepts risk)
 
-2. **`lkr gen` as the safe alternative**:
+2. **TTY Guard — clipboard blocked** (prevents `lkr get key && pbpaste` bypass):
+   - In non-interactive environments, `lkr get` skips clipboard copy entirely
+   - This closes the attack vector where an agent runs `lkr get` then `pbpaste` to extract the key
+
+3. **`lkr exec` — safest automation path** (keys never leave the process boundary):
+   - Injects Keychain keys as environment variables into a child process
+   - Keys never appear in stdout, files, or clipboard
+   - `lkr exec -- python script.py` sets `OPENAI_API_KEY` etc. in the child's env only
+   - The agent cannot observe the env vars of the child process
+
+4. **`lkr gen` as file-based alternative**:
    - Agents can use `lkr gen .env.example -o .env` to set up environments
    - Keys are written to files (not stdout), with `0600` permissions
-   - The agent never sees raw key values in its context window
+   - **Caveat**: an agent with file access can still `cat .env` — use `lkr exec` when possible
 
-3. **`zeroize` for memory hygiene**:
+5. **`zeroize` for memory hygiene**:
    - `KeyStore::get()` returns `Zeroizing<String>` — memory is zeroed when the value goes out of scope
    - `Zeroizing<String>` intentionally does NOT implement `Display`, preventing accidental `println!("{}", value)` — you must explicitly dereference with `&*value`
 

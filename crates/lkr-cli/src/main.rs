@@ -93,6 +93,20 @@ enum Commands {
         #[arg(long)]
         force: bool,
     },
+
+    /// Run a command with Keychain keys injected as environment variables.
+    ///
+    /// Keys never appear in stdout, files, or clipboard — the safest way
+    /// to pass secrets to child processes.
+    Exec {
+        /// Key names to inject (e.g. -k openai:prod). Omit to inject all runtime keys.
+        #[arg(short = 'k', long = "key")]
+        keys: Vec<String>,
+
+        /// The command and arguments to run (after --)
+        #[arg(trailing_var_arg = true, required = true)]
+        command: Vec<String>,
+    },
 }
 
 fn parse_kind(s: &str) -> Result<KeyKind, String> {
@@ -162,6 +176,7 @@ fn main() {
             output,
             force,
         } => cmd_gen(&store, &template, output.as_deref(), force),
+        Commands::Exec { keys, command } => cmd_exec(&store, &keys, &command),
     };
 
     if let Err(e) = result {
@@ -243,8 +258,13 @@ fn cmd_get(
         return Ok(());
     }
 
-    // Copy to clipboard with 30s auto-clear
-    let clipboard_ok =
+    // Copy to clipboard with 30s auto-clear.
+    // Security: skip clipboard in non-interactive environments to prevent
+    // agent bypass via `lkr get key && pbpaste`.
+    let clipboard_ok = if !is_tty {
+        eprintln!("Clipboard copy skipped (non-interactive environment).");
+        false
+    } else {
         match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(&*value)) {
             Ok(()) => {
                 schedule_clipboard_clear(30);
@@ -255,7 +275,8 @@ fn cmd_get(
                 eprintln!("Warning: clipboard unavailable ({})", e);
                 false
             }
-        };
+        }
+    };
 
     if json {
         let display_value = if show {
@@ -529,4 +550,68 @@ fn cmd_rm(store: &impl KeyStore, name: &str, force: bool) -> lkr_core::Result<()
     store.delete(name)?;
     eprintln!("Removed {}", name);
     Ok(())
+}
+
+fn cmd_exec(
+    store: &impl KeyStore,
+    keys: &[String],
+    command: &[String],
+) -> lkr_core::Result<()> {
+    if command.is_empty() {
+        return Err(lkr_core::Error::Usage(
+            "No command specified. Usage: lkr exec -- <command> [args...]".to_string(),
+        ));
+    }
+
+    // Collect keys to inject
+    let entries: Vec<(String, lkr_core::Zeroizing<String>)> = if keys.is_empty() {
+        // No -k flags: inject all runtime keys
+        let listed = store.list(false)?;
+        let mut pairs = Vec::new();
+        for entry in &listed {
+            if let Ok((value, _kind)) = store.get(&entry.name)
+                && let Some(env_var) = lkr_core::key_to_env_var(&entry.name)
+            {
+                pairs.push((env_var, value));
+            }
+        }
+        pairs
+    } else {
+        // Specific keys requested
+        let mut pairs = Vec::new();
+        for key_name in keys {
+            let (value, _kind) = store.get(key_name)?;
+            let env_var = lkr_core::key_to_env_var(key_name).unwrap_or_else(|| {
+                // Unknown provider → use key name as env var (uppercased, : → _)
+                key_name.to_uppercase().replace(':', "_")
+            });
+            pairs.push((env_var, value));
+        }
+        pairs
+    };
+
+    if entries.is_empty() {
+        eprintln!("Warning: no keys matched. Running command without injected env vars.");
+    } else {
+        eprintln!("Injecting {} key(s) as env vars:", entries.len());
+        for (env_var, _) in &entries {
+            eprintln!("  {}", env_var);
+        }
+    }
+
+    // Build and exec child process
+    let mut child = std::process::Command::new(&command[0]);
+    child.args(&command[1..]);
+
+    // Inject keys as environment variables
+    for (env_var, value) in &entries {
+        child.env(env_var, &**value);
+    }
+
+    let status = child
+        .status()
+        .map_err(|e| lkr_core::Error::Usage(format!("Failed to execute '{}': {}", command[0], e)))?;
+
+    // Propagate child exit code
+    std::process::exit(status.code().unwrap_or(1));
 }

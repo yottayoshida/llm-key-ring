@@ -92,6 +92,16 @@ ANTHROPIC_API_KEY=              # ← resolved from anthropic:*
 
 Generated files are written with `0600` permissions. A warning is shown if the output file is not in `.gitignore`.
 
+### Run a command with keys as env vars (safest)
+
+```bash
+lkr exec -- python script.py                # Inject all runtime keys
+lkr exec -k openai:prod -- curl ...         # Inject specific keys only
+lkr exec -k openai:prod -k anthropic:main -- node app.js
+```
+
+Keys are mapped to conventional env var names (e.g., `openai:prod` → `OPENAI_API_KEY`) and injected into the child process. **Keys never appear in stdout, files, or clipboard** — this is the safest way to pass secrets to programs.
+
 ### Delete a key
 
 ```bash
@@ -158,15 +168,21 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the full threat model. Key protecti
 
 ### Agent IDE Protection (Antigravity Attack)
 
-AI coding assistants (Cursor, Copilot, etc.) can be tricked via prompt injection into running commands that exfiltrate secrets. `lkr` defends against this:
+AI coding assistants (Cursor, Copilot, etc.) can be tricked via prompt injection into running commands that exfiltrate secrets. `lkr` defends against this with three layers:
 
 ```bash
-# In a pipe (non-interactive) — BLOCKED with exit code 2
+# Layer 1: --plain/--show blocked in pipes (exit code 2)
 echo | lkr get openai:prod --plain
 # Error: --plain and --show are blocked in non-interactive environments.
 
-# Safe alternative for automation:
-lkr gen .env.example -o .env   # Keys go to file (0600), never stdout
+# Layer 2: Clipboard copy skipped in non-interactive environments
+echo | lkr get openai:prod
+# "Clipboard copy skipped (non-interactive environment)."
+# → prevents `lkr get key && pbpaste` bypass
+
+# Layer 3: Safe alternatives for automation
+lkr exec -- python script.py   # Keys in env vars only (never stdout/file/clipboard)
+lkr gen .env.example -o .env   # Keys to file (0600), never stdout
 ```
 
 ## Architecture
@@ -175,7 +191,7 @@ lkr gen .env.example -o .env   # Keys go to file (0600), never stdout
 llm-key-ring/
 ├── crates/
 │   ├── lkr-core/     # Library: KeyStore trait, Keychain, templates, usage API
-│   ├── lkr-cli/      # Binary: clap CLI (set/get/list/rm/gen/usage)
+│   ├── lkr-cli/      # Binary: clap CLI (set/get/list/rm/gen/usage/exec)
 │   └── lkr-app/      # Binary: Tauri v2 menu bar app (skeleton)
 ├── docs/
 │   └── SECURITY.md   # Threat model

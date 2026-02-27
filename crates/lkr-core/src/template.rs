@@ -56,6 +56,19 @@ const ENV_PREFIX_MAP: &[(&str, &str)] = &[
     ("ANYSCALE_", "anyscale"),
 ];
 
+/// Map a key name (e.g. `openai:prod`) to a conventional env var name
+/// (e.g. `OPENAI_API_KEY`).  Returns `None` if the provider is not in
+/// `ENV_PREFIX_MAP`.
+pub fn key_to_env_var(key_name: &str) -> Option<String> {
+    let provider = key_name.split(':').next()?;
+    for &(prefix, prov) in ENV_PREFIX_MAP {
+        if prov == provider {
+            return Some(format!("{}API_KEY", prefix));
+        }
+    }
+    None
+}
+
 // ---------------------------------------------------------------------------
 // Public API
 // ---------------------------------------------------------------------------
