@@ -74,7 +74,7 @@ lkr gen .env.example -o .env.local  # Explicit output path
 lkr gen config.json.template      # Works with JSON templates too
 ```
 
-**`.env.example` format** — keys are auto-resolved by provider prefix:
+**`.env.example` format** — keys are auto-resolved by exact env var name match:
 
 ```env
 OPENAI_API_KEY=your-key-here    # ← resolved from openai:* in Keychain
@@ -192,14 +192,18 @@ llm-key-ring/
 ├── crates/
 │   ├── lkr-core/     # Library: KeyStore trait, Keychain, templates, usage API
 │   ├── lkr-cli/      # Binary: clap CLI (set/get/list/rm/gen/usage/exec)
-│   └── lkr-app/      # Binary: Tauri v2 menu bar app (skeleton)
+│   └── lkr-app/      # Binary: Tauri v2 menu bar app (planned)
 ├── docs/
 │   └── SECURITY.md   # Threat model
 ├── LICENSE-MIT
 └── LICENSE-APACHE
 ```
 
-All business logic lives in `lkr-core`. The CLI and Tauri app are thin wrappers.
+All business logic lives in `lkr-core`. The CLI is a thin wrapper. The Tauri menu bar app is planned for future development.
+
+### Platform Support
+
+Currently macOS only (uses native Keychain via `security-framework`). The `KeyStore` trait abstraction is designed for future backend support (Linux `libsecret`, Windows Credential Manager).
 
 ### Keychain Storage
 
@@ -215,7 +219,7 @@ All business logic lives in `lkr-core`. The CLI and Tauri app are thin wrappers.
 # Build
 cargo build
 
-# Test (40 tests)
+# Test (42 tests)
 cargo test
 
 # Clippy
