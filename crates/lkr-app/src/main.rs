@@ -1,7 +1,7 @@
 // Prevents additional console window on Windows in release
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use lkr_core::{KeyKind, KeyStore, KeychainStore};
+use lkr_core::{KeyKind, KeyStore, KeychainStore, mask_value};
 use serde::{Deserialize, Serialize};
 
 #[derive(Serialize)]
@@ -28,17 +28,6 @@ fn get_key(name: String) -> Result<GetKeyResponse, String> {
         masked_value: mask_value(&value),
         kind: kind.to_string(),
     })
-}
-
-fn mask_value(value: &str) -> String {
-    let chars: Vec<char> = value.chars().collect();
-    let len = chars.len();
-    if len <= 8 {
-        return "*".repeat(len);
-    }
-    let prefix: String = chars[..4].iter().collect();
-    let suffix: String = chars[len - 4..].iter().collect();
-    format!("{}...{}", prefix, suffix)
 }
 
 #[tauri::command]

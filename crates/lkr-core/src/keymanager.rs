@@ -1,8 +1,13 @@
 use crate::error::{Error, Result};
 use crate::SERVICE_NAME;
+use core_foundation::base::TCFType;
+use core_foundation::string::CFString;
 use serde::{Deserialize, Serialize};
+use security_framework::item::{ItemClass, ItemSearchOptions, Limit, SearchResult};
+use security_framework_sys::item::kSecAttrAccount;
 use std::collections::HashMap;
 use std::sync::Mutex;
+use zeroize::Zeroizing;
 
 // ---------------------------------------------------------------------------
 // Types
@@ -94,7 +99,7 @@ fn validate_name(name: &str) -> Result<(String, String)> {
 
 /// Mask an API key for display: "sk-proj-abc...xyz" → "sk-p...wxyz"
 /// Uses char-based slicing to avoid panics on non-ASCII input.
-fn mask_value(value: &str) -> String {
+pub fn mask_value(value: &str) -> String {
     let chars: Vec<char> = value.chars().collect();
     let len = chars.len();
     if len <= 8 {
@@ -113,7 +118,7 @@ fn mask_value(value: &str) -> String {
 /// Enables MockStore for testing and KeychainStore for production.
 pub trait KeyStore {
     fn set(&self, name: &str, value: &str, kind: KeyKind, force: bool) -> Result<()>;
-    fn get(&self, name: &str) -> Result<(String, KeyKind)>;
+    fn get(&self, name: &str) -> Result<(Zeroizing<String>, KeyKind)>;
     fn delete(&self, name: &str) -> Result<()>;
     fn list(&self, include_admin: bool) -> Result<Vec<KeyEntry>>;
     fn exists(&self, name: &str) -> Result<bool>;
@@ -136,6 +141,15 @@ impl KeychainStore {
 
     fn entry(&self, name: &str) -> std::result::Result<keyring::Entry, Error> {
         keyring::Entry::new(&self.service, name).map_err(|e| Error::Keychain(e.to_string()))
+    }
+
+    /// Extract the account name (kSecAttrAccount) from a CFDictionary.
+    /// Returns None if the attribute is missing or not a valid string.
+    fn extract_account(dict: &core_foundation::dictionary::CFDictionary) -> Option<String> {
+        let account_key = unsafe { CFString::wrap_under_get_rule(kSecAttrAccount) };
+        let account_ref = dict.find(account_key.as_CFTypeRef())?;
+        let account = unsafe { CFString::wrap_under_get_rule(*account_ref as _) }.to_string();
+        Some(account)
     }
 }
 
@@ -174,21 +188,21 @@ impl KeyStore for KeychainStore {
         Ok(())
     }
 
-    fn get(&self, name: &str) -> Result<(String, KeyKind)> {
+    fn get(&self, name: &str) -> Result<(Zeroizing<String>, KeyKind)> {
         validate_name(name)?;
         let entry = self.entry(name)?;
-        let json = entry.get_password().map_err(|e| match e {
+        let json = Zeroizing::new(entry.get_password().map_err(|e| match e {
             keyring::Error::NoEntry => Error::KeyNotFound {
                 name: name.to_string(),
             },
             keyring::Error::PlatformFailure(_) => Error::KeychainLocked,
             _ => Error::Keychain(e.to_string()),
-        })?;
+        })?);
 
         let stored: StoredEntry = serde_json::from_str(&json)
             .map_err(|e| Error::Keychain(format!("Failed to deserialize: {}", e)))?;
 
-        Ok((stored.value, stored.kind))
+        Ok((Zeroizing::new(stored.value), stored.kind))
     }
 
     fn delete(&self, name: &str) -> Result<()> {
@@ -204,15 +218,44 @@ impl KeyStore for KeychainStore {
         Ok(())
     }
 
-    fn list(&self, _include_admin: bool) -> Result<Vec<KeyEntry>> {
-        // NOTE: macOS Keychain does not provide a "list all items for service" API
-        // through the keyring crate. For MVP, we maintain a separate index.
-        // This will be addressed in a future iteration with security-framework
-        // or a local metadata file.
-        //
-        // For now, return an empty list — the CLI `list` command will note this
-        // limitation and suggest using `lkr set` to register keys.
-        Ok(vec![])
+    fn list(&self, include_admin: bool) -> Result<Vec<KeyEntry>> {
+        // Step 1: Enumerate account names via security-framework
+        let results = ItemSearchOptions::new()
+            .class(ItemClass::generic_password())
+            .service(&self.service)
+            .load_attributes(true)
+            .limit(Limit::All)
+            .search();
+
+        let results = match results {
+            Ok(r) => r,
+            Err(e) if e.code() == -25300 => return Ok(vec![]), // errSecItemNotFound
+            Err(e) => return Err(Error::Keychain(format!("Keychain search failed: {}", e))),
+        };
+
+        // Step 2: For each account, read full data via keyring crate
+        let mut entries = Vec::new();
+        for result in results {
+            if let SearchResult::Dict(dict) = result
+                && let Some(account) = Self::extract_account(&dict)
+                && let Ok((value, kind)) = self.get(&account)
+            {
+                if !include_admin && kind == KeyKind::Admin {
+                    continue;
+                }
+                if let Ok((provider, label)) = validate_name(&account) {
+                    entries.push(KeyEntry {
+                        name: account,
+                        provider,
+                        label,
+                        kind,
+                        masked_value: mask_value(&value),
+                    });
+                }
+            }
+        }
+        entries.sort_by(|a, b| a.name.cmp(&b.name));
+        Ok(entries)
     }
 
     fn exists(&self, name: &str) -> Result<bool> {
@@ -270,11 +313,11 @@ impl KeyStore for MockStore {
         Ok(())
     }
 
-    fn get(&self, name: &str) -> Result<(String, KeyKind)> {
+    fn get(&self, name: &str) -> Result<(Zeroizing<String>, KeyKind)> {
         validate_name(name)?;
         let keys = self.keys.lock().unwrap();
         match keys.get(name) {
-            Some(entry) => Ok((entry.value.clone(), entry.kind)),
+            Some(entry) => Ok((Zeroizing::new(entry.value.clone()), entry.kind)),
             None => Err(Error::KeyNotFound {
                 name: name.to_string(),
             }),
@@ -384,7 +427,7 @@ mod tests {
         s.set("openai:prod", "sk-abc123", KeyKind::Runtime, false)
             .unwrap();
         let (val, kind) = s.get("openai:prod").unwrap();
-        assert_eq!(val, "sk-abc123");
+        assert_eq!(&*val, "sk-abc123");
         assert_eq!(kind, KeyKind::Runtime);
     }
 
@@ -394,7 +437,7 @@ mod tests {
         s.set("openai:admin", "sk-admin-xyz", KeyKind::Admin, false)
             .unwrap();
         let (val, kind) = s.get("openai:admin").unwrap();
-        assert_eq!(val, "sk-admin-xyz");
+        assert_eq!(&*val, "sk-admin-xyz");
         assert_eq!(kind, KeyKind::Admin);
     }
 
@@ -426,7 +469,7 @@ mod tests {
         s.set("openai:prod", "sk-def", KeyKind::Runtime, true)
             .unwrap();
         let (val, _) = s.get("openai:prod").unwrap();
-        assert_eq!(val, "sk-def");
+        assert_eq!(&*val, "sk-def");
     }
 
     #[test]

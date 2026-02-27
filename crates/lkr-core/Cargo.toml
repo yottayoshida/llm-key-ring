@@ -12,3 +12,7 @@ keyring = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }
+zeroize = { workspace = true }
+security-framework = { workspace = true }
+core-foundation = { workspace = true }
+security-framework-sys = { workspace = true }

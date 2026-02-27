@@ -21,4 +21,7 @@ pub enum Error {
 
     #[error("Keychain is locked. Please unlock and try again.")]
     KeychainLocked,
+
+    #[error("Template error: {0}")]
+    Template(String),
 }
