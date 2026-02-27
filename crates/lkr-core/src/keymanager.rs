@@ -7,7 +7,7 @@ use security_framework::item::{ItemClass, ItemSearchOptions, Limit, SearchResult
 use security_framework_sys::item::kSecAttrAccount;
 use std::collections::HashMap;
 use std::sync::Mutex;
-use zeroize::Zeroizing;
+use zeroize::{Zeroize, Zeroizing};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -172,12 +172,17 @@ impl KeyStore for KeychainStore {
             });
         }
 
-        let stored = StoredEntry {
+        let mut stored = StoredEntry {
             value: value.to_string(),
             kind,
         };
-        let json = serde_json::to_string(&stored)
-            .map_err(|e| Error::Keychain(format!("Failed to serialize: {}", e)))?;
+        let json = Zeroizing::new(
+            serde_json::to_string(&stored)
+                .map_err(|e| Error::Keychain(format!("Failed to serialize: {}", e)))?,
+        );
+
+        // Zeroize the intermediate copy now that it's been serialized
+        stored.value.zeroize();
 
         let entry = self.entry(name)?;
         entry.set_password(&json).map_err(|e| match e {
@@ -185,6 +190,7 @@ impl KeyStore for KeychainStore {
             _ => Error::Keychain(e.to_string()),
         })?;
 
+        // json (Zeroizing<String>) is zeroized on drop here
         Ok(())
     }
 
