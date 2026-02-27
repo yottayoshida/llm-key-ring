@@ -1,10 +1,12 @@
 pub mod error;
 pub mod keymanager;
 pub mod template;
+pub mod usage;
 
 pub use error::{Error, Result};
 pub use keymanager::{KeyEntry, KeyKind, KeyStore, KeychainStore, mask_value};
 pub use template::{generate, check_gitignore, GenResult, Resolution};
+pub use usage::{CostReport, CostLineItem, UsageCache, fetch_cost, available_providers, format_cost};
 pub use zeroize::Zeroizing;
 
 /// Keychain service name — shared between CLI and Tauri.

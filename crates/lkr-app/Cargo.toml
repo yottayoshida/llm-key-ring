@@ -11,6 +11,7 @@ repository.workspace = true
 lkr-core = { path = "../lkr-core" }
 serde = { workspace = true }
 serde_json = { workspace = true }
+zeroize = { workspace = true }
 tauri = { version = "2", features = ["tray-icon"] }
 
 [build-dependencies]

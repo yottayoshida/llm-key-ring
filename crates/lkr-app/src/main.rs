@@ -3,6 +3,7 @@
 
 use lkr_core::{KeyKind, KeyStore, KeychainStore, mask_value};
 use serde::{Deserialize, Serialize};
+use zeroize::Zeroize;
 
 #[derive(Serialize)]
 struct GetKeyResponse {
@@ -19,6 +20,7 @@ struct SetKeyRequest {
     force: bool,
 }
 
+/// IPC Security: returns ONLY masked_value — raw key NEVER crosses the IPC boundary.
 #[tauri::command]
 fn get_key(name: String) -> Result<GetKeyResponse, String> {
     let store = KeychainStore::new();
@@ -30,20 +32,31 @@ fn get_key(name: String) -> Result<GetKeyResponse, String> {
     })
 }
 
+/// IPC Security: `req.value` is zeroized after storage to prevent the raw key
+/// from lingering in process memory. See docs/SECURITY.md for the full threat model.
 #[tauri::command]
-fn set_key(req: SetKeyRequest) -> Result<String, String> {
+fn set_key(mut req: SetKeyRequest) -> Result<String, String> {
     let store = KeychainStore::new();
     let kind = match req.kind.as_str() {
         "runtime" => KeyKind::Runtime,
         "admin" => KeyKind::Admin,
-        other => return Err(format!("Invalid kind '{}'. Must be 'runtime' or 'admin'.", other)),
+        other => {
+            req.value.zeroize();
+            return Err(format!("Invalid kind '{}'. Must be 'runtime' or 'admin'.", other));
+        }
     };
-    store
+    let name = req.name.clone();
+    let result = store
         .set(&req.name, req.value.trim(), kind, req.force)
-        .map_err(|e| e.to_string())?;
-    Ok(format!("Stored {}", req.name))
+        .map_err(|e| e.to_string());
+
+    // Zeroize raw key value before returning (regardless of success/error)
+    req.value.zeroize();
+
+    result.map(|()| format!("Stored {}", name))
 }
 
+/// IPC Security: KeyEntry contains only masked_value — no raw values exposed.
 #[tauri::command]
 fn list_keys(include_admin: bool) -> Result<Vec<lkr_core::KeyEntry>, String> {
     let store = KeychainStore::new();

@@ -24,4 +24,13 @@ pub enum Error {
 
     #[error("Template error: {0}")]
     Template(String),
+
+    #[error("Usage API error: {0}")]
+    Usage(String),
+
+    #[error("Admin key required for {provider} usage tracking. Run `lkr set {provider}:admin --kind admin` to register.")]
+    AdminKeyRequired { provider: String },
+
+    #[error("HTTP {status}: {body}")]
+    HttpError { status: u16, body: String },
 }

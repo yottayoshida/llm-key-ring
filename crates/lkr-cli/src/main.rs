@@ -7,7 +7,7 @@ use std::io::{self, IsTerminal, Write};
     name = "lkr",
     about = "LLM Key Ring — manage LLM API keys via macOS Keychain",
     version,
-    after_help = "Examples:\n  lkr set openai:prod\n  lkr get openai:prod\n  lkr list\n  lkr rm openai:prod\n  lkr gen .env.example -o .env"
+    after_help = "Examples:\n  lkr set openai:prod\n  lkr get openai:prod\n  lkr list\n  lkr rm openai:prod\n  lkr gen .env.example -o .env\n  lkr usage openai"
 )]
 struct Cli {
     #[command(subcommand)]
@@ -70,6 +70,16 @@ enum Commands {
         force: bool,
     },
 
+    /// Show API usage costs for the current month
+    Usage {
+        /// Provider name (openai, anthropic). Omit to show all.
+        provider: Option<String>,
+
+        /// Force fresh API fetch (reserved for future file-based caching)
+        #[arg(long)]
+        refresh: bool,
+    },
+
     /// Generate config from template (resolves Keychain keys)
     Gen {
         /// Template file path (e.g. .env.example, .mcp.json.template)
@@ -96,6 +106,42 @@ fn parse_kind(s: &str) -> Result<KeyKind, String> {
     }
 }
 
+/// Spawn a detached background process that clears the clipboard after `seconds`.
+///
+/// Uses SHA-256 hash comparison to avoid clearing if the user copied something else.
+/// The raw key value is never passed as a process argument (prevents `ps` exposure).
+fn schedule_clipboard_clear(seconds: u32) {
+    // Capture SHA-256 hash of current clipboard content
+    let hash_output = std::process::Command::new("sh")
+        .arg("-c")
+        .arg("pbpaste 2>/dev/null | shasum -a 256 | cut -d' ' -f1")
+        .output();
+
+    let expected_hash = match hash_output {
+        Ok(output) => String::from_utf8_lossy(&output.stdout).trim().to_string(),
+        Err(_) => return, // Can't hash — skip auto-clear silently
+    };
+
+    if expected_hash.is_empty() {
+        return;
+    }
+
+    // Spawn detached process: sleep → compare hash → clear if unchanged
+    let script = format!(
+        "sleep {} && current=$(pbpaste 2>/dev/null | shasum -a 256 | cut -d' ' -f1) && \
+         [ \"$current\" = \"{}\" ] && printf '' | pbcopy",
+        seconds, expected_hash
+    );
+
+    let _ = std::process::Command::new("sh")
+        .arg("-c")
+        .arg(&script)
+        .stdin(std::process::Stdio::null())
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .spawn(); // Detach — orphaned child survives parent exit
+}
+
 fn main() {
     let cli = Cli::parse();
     let store = KeychainStore::new();
@@ -110,6 +156,7 @@ fn main() {
         } => cmd_get(&store, &name, show, plain, force_plain, cli.json),
         Commands::List { all } => cmd_list(&store, all, cli.json),
         Commands::Rm { name, force } => cmd_rm(&store, &name, force),
+        Commands::Usage { provider, refresh } => cmd_usage(&store, provider.as_deref(), refresh, cli.json),
         Commands::Gen {
             template,
             output,
@@ -196,12 +243,12 @@ fn cmd_get(
         return Ok(());
     }
 
-    // Copy to clipboard
-    // TODO: Implement 30s auto-clear (spawn background process)
+    // Copy to clipboard with 30s auto-clear
     let clipboard_ok =
         match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(&*value)) {
             Ok(()) => {
-                eprintln!("Copied to clipboard");
+                schedule_clipboard_clear(30);
+                eprintln!("Copied to clipboard (auto-clears in 30s)");
                 true
             }
             Err(e) => {
@@ -266,6 +313,93 @@ fn cmd_list(store: &impl KeyStore, include_admin: bool, json: bool) -> lkr_core:
     }
     println!("\n  {} key(s) stored in Keychain", entries.len());
 
+    Ok(())
+}
+
+fn cmd_usage(
+    store: &impl KeyStore,
+    provider: Option<&str>,
+    refresh: bool,
+    json: bool,
+) -> lkr_core::Result<()> {
+    let cache = lkr_core::UsageCache::default();
+
+    let rt = tokio::runtime::Runtime::new()
+        .map_err(|e| lkr_core::Error::Usage(format!("Failed to start async runtime: {}", e)))?;
+
+    let providers: Vec<String> = match provider {
+        Some(p) => vec![p.to_lowercase()],
+        None => {
+            let avail = lkr_core::available_providers(store)?;
+            if avail.is_empty() {
+                eprintln!("No admin keys registered for usage tracking.\n");
+                eprintln!("  Register an admin key first:");
+                eprintln!("    lkr set openai:admin --kind admin");
+                eprintln!("    lkr set anthropic:admin --kind admin");
+                return Ok(());
+            }
+            avail
+        }
+    };
+
+    let mut reports = Vec::new();
+    let mut errors = Vec::new();
+    for p in &providers {
+        match rt.block_on(lkr_core::fetch_cost(store, p, &cache, refresh)) {
+            Ok(report) => reports.push(report),
+            Err(e) => {
+                eprintln!("  {}: {}", p, e);
+                errors.push(e);
+            }
+        }
+    }
+
+    if json {
+        println!("{}", serde_json::to_string_pretty(&reports).unwrap());
+        // Return error if ALL fetches failed (partial success is OK)
+        if reports.is_empty() && !errors.is_empty() {
+            return Err(errors.remove(0));
+        }
+        return Ok(());
+    }
+
+    if reports.is_empty() {
+        if errors.is_empty() {
+            eprintln!("No usage data available.");
+            return Ok(());
+        }
+        // All fetches failed — propagate the first error for exit code 1
+        return Err(errors.remove(0));
+    }
+
+    for report in &reports {
+        println!(
+            "\n  {} — {} to {}",
+            report.provider, report.period_start, report.period_end
+        );
+        println!("  {}", "-".repeat(50));
+
+        for item in &report.line_items {
+            println!(
+                "    {:<30} {}",
+                item.description,
+                lkr_core::format_cost(item.cost_cents)
+            );
+        }
+
+        println!(
+            "  {:<32} {}",
+            "Total",
+            lkr_core::format_cost(report.total_cost_cents)
+        );
+    }
+
+    if reports.len() > 1 {
+        let grand_total: f64 = reports.iter().map(|r| r.total_cost_cents).sum();
+        println!("\n  {:<32} {}", "Grand Total", lkr_core::format_cost(grand_total));
+    }
+
+    println!();
     Ok(())
 }
 

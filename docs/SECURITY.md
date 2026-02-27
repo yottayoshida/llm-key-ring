@@ -10,7 +10,7 @@ and the design decisions behind each mitigation.
 |---|--------|----------|------------|--------|
 | T1 | Plaintext keys in dotfiles (`.env`) | High | Keychain-encrypted storage; `.env` only generated on demand with `0600` permissions | Implemented |
 | T2 | Shell history exposure | High | `lkr set` reads via hidden prompt (rpassword), never accepts key as CLI argument | Implemented |
-| T3 | Clipboard residual | Medium | Clipboard copy with TODO for 30s auto-clear | Partial |
+| T3 | Clipboard residual | Medium | 30s auto-clear via detached background process; hash comparison prevents clearing user's own clipboard | Implemented |
 | T4 | Terminal display leakage | Medium | Default masked output (`sk-p...wxyz`); `--show` required for plaintext | Implemented |
 | T5 | Agent IDE key exfiltration (Antigravity-style) | High | TTY guard blocks `--plain`/`--show` in non-interactive environments | Implemented |
 | T6 | Memory dump / core dump | Medium | `zeroize::Zeroizing<String>` zeroes memory on drop | Implemented |
@@ -57,7 +57,7 @@ These are **out of scope** — users should be aware of these limitations:
 | Agent reads generated `.env` file via `cat` | File is on disk after `lkr gen`; any process with file access can read it | Rely on `0600` permissions; delete generated files after use |
 | Keychain unlocked while machine unattended | macOS Keychain stays unlocked during a login session | Lock screen when away; configure Keychain auto-lock timeout |
 | Key transmitted over network after retrieval | LKR is local-only; what happens after `lkr get` is up to the caller | Use TLS for API calls; rotate keys regularly |
-| Clipboard manager capturing copied keys | Third-party clipboard managers may persist clipboard history | Disable clipboard managers for sensitive content; TODO: implement auto-clear |
+| Clipboard manager capturing copied keys | Third-party clipboard managers may persist clipboard history | Disable clipboard managers for sensitive content; 30s auto-clear mitigates casual exposure |
 
 ## Security Design Principles
 
