@@ -34,36 +34,39 @@ pub struct GenResult {
 // Known provider mappings for .env auto-detection
 // ---------------------------------------------------------------------------
 
-/// Maps common env var prefixes to LKR provider names.
+/// Maps exact env var names to LKR provider names.
 /// Used by .env.example auto-detection: `OPENAI_API_KEY` → tries `openai:*`.
-const ENV_PREFIX_MAP: &[(&str, &str)] = &[
-    ("OPENAI_", "openai"),
-    ("ANTHROPIC_", "anthropic"),
-    ("GOOGLE_", "google"),
-    ("MISTRAL_", "mistral"),
-    ("COHERE_", "cohere"),
-    ("GROQ_", "groq"),
-    ("PERPLEXITY_", "perplexity"),
-    ("FIREWORKS_", "fireworks"),
-    ("TOGETHER_", "together"),
-    ("REPLICATE_", "replicate"),
-    ("HUGGINGFACE_", "huggingface"),
-    ("DEEPSEEK_", "deepseek"),
-    ("XAI_", "xai"),
-    ("AZURE_OPENAI_", "azure-openai"),
-    ("AWS_", "aws"),
-    ("VOYAGE_", "voyage"),
-    ("ANYSCALE_", "anyscale"),
+///
+/// **Design**: exact match (not prefix) to avoid over-broad matching.
+/// e.g. `AWS_REGION` must NOT be replaced with an API key just because `aws:*` exists.
+const ENV_VAR_MAP: &[(&str, &str)] = &[
+    ("OPENAI_API_KEY", "openai"),
+    ("ANTHROPIC_API_KEY", "anthropic"),
+    ("GOOGLE_API_KEY", "google"),
+    ("MISTRAL_API_KEY", "mistral"),
+    ("COHERE_API_KEY", "cohere"),
+    ("GROQ_API_KEY", "groq"),
+    ("PERPLEXITY_API_KEY", "perplexity"),
+    ("FIREWORKS_API_KEY", "fireworks"),
+    ("TOGETHER_API_KEY", "together"),
+    ("REPLICATE_API_KEY", "replicate"),
+    ("HUGGINGFACE_API_KEY", "huggingface"),
+    ("DEEPSEEK_API_KEY", "deepseek"),
+    ("XAI_API_KEY", "xai"),
+    ("AZURE_OPENAI_API_KEY", "azure-openai"),
+    ("AWS_API_KEY", "aws"),
+    ("VOYAGE_API_KEY", "voyage"),
+    ("ANYSCALE_API_KEY", "anyscale"),
 ];
 
 /// Map a key name (e.g. `openai:prod`) to a conventional env var name
 /// (e.g. `OPENAI_API_KEY`).  Returns `None` if the provider is not in
-/// `ENV_PREFIX_MAP`.
+/// `ENV_VAR_MAP`.
 pub fn key_to_env_var(key_name: &str) -> Option<String> {
     let provider = key_name.split(':').next()?;
-    for &(prefix, prov) in ENV_PREFIX_MAP {
+    for &(env_var, prov) in ENV_VAR_MAP {
         if prov == provider {
-            return Some(format!("{}API_KEY", prefix));
+            return Some(env_var.to_string());
         }
     }
     None
@@ -202,6 +205,9 @@ fn build_provider_map(
 
 /// Try to resolve an env var name to a Keychain key.
 /// Returns (key_name, decrypted_value, alternatives) if found.
+///
+/// Uses exact env var name matching (not prefix) to avoid over-broad substitution.
+/// e.g. `AWS_REGION` will NOT be matched even if `aws:*` key exists.
 fn resolve_env_var(
     store: &impl KeyStore,
     var_name: &str,
@@ -209,9 +215,9 @@ fn resolve_env_var(
 ) -> Option<(String, zeroize::Zeroizing<String>, Vec<String>)> {
     let var_upper = var_name.to_uppercase();
 
-    // Match by known prefix
-    for &(prefix, provider) in ENV_PREFIX_MAP {
-        if var_upper.starts_with(prefix)
+    // Match by exact env var name
+    for &(env_var, provider) in ENV_VAR_MAP {
+        if var_upper == env_var
             && let Some((key_name, alternatives)) = provider_map.get(provider)
             && let Ok((value, _)) = store.get(key_name)
         {
@@ -259,10 +265,13 @@ fn generate_json(store: &impl KeyStore, content: &str) -> Result<GenResult> {
                         key_name
                     )));
                 }
+                // Escape special JSON characters in the value to prevent
+                // broken JSON output if a key contains ", \, or control chars.
+                let escaped = escape_json_value(&value);
                 output = format!(
                     "{}{}{}",
                     &output[..start],
-                    &*value,
+                    escaped,
                     &output[end..]
                 );
                 resolutions.push(Resolution {
@@ -271,7 +280,7 @@ fn generate_json(store: &impl KeyStore, content: &str) -> Result<GenResult> {
                     alternatives: vec![], // JSON placeholders are explicit; no ambiguity
                 });
                 // Don't advance search_from past end — replacement may be shorter
-                search_from = start + value.len();
+                search_from = start + escaped.len();
             }
             Err(Error::KeyNotFound { .. }) => {
                 resolutions.push(Resolution {
@@ -294,6 +303,27 @@ fn generate_json(store: &impl KeyStore, content: &str) -> Result<GenResult> {
 /// Detect if content looks like a JSON template (contains {{lkr:...}}).
 fn is_json_template(content: &str) -> bool {
     content.contains("{{lkr:")
+}
+
+/// Escape special characters for safe embedding in a JSON string value.
+/// Handles: backslash, double-quote, and control characters.
+fn escape_json_value(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        match c {
+            '\\' => out.push_str("\\\\"),
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            '\r' => out.push_str("\\r"),
+            '\t' => out.push_str("\\t"),
+            c if c.is_control() => {
+                // Unicode escape for other control chars
+                out.push_str(&format!("\\u{:04x}", c as u32));
+            }
+            _ => out.push(c),
+        }
+    }
+    out
 }
 
 // ---------------------------------------------------------------------------
@@ -401,6 +431,27 @@ DATABASE_URL=postgres://localhost/mydb
         assert!(result.resolutions[0].key_name.is_none());
     }
 
+    #[test]
+    fn test_env_does_not_match_prefix_only() {
+        // P1 fix: AWS_REGION must NOT be overwritten when aws:* key exists.
+        let store = MockStore::new();
+        store
+            .set("aws:prod", "AKIAIOSFODNN7EXAMPLE", KeyKind::Runtime, false)
+            .unwrap();
+        let template = "\
+AWS_REGION=us-east-1
+AWS_API_KEY=your-key-here
+AWS_DEFAULT_REGION=ap-northeast-1
+";
+        let result = generate_env(&store, template).unwrap();
+
+        // AWS_REGION and AWS_DEFAULT_REGION must be kept as-is
+        assert!(result.content.contains("AWS_REGION=us-east-1"));
+        assert!(result.content.contains("AWS_DEFAULT_REGION=ap-northeast-1"));
+        // Only AWS_API_KEY should be resolved
+        assert!(result.content.contains("AWS_API_KEY=AKIAIOSFODNN7EXAMPLE"));
+    }
+
     // -- JSON / {{lkr:...}} format --
 
     #[test]
@@ -464,6 +515,21 @@ DATABASE_URL=postgres://localhost/mydb
         let template = r#"{"key": "{{lkr:openai:admin}}"}"#;
         let err = generate_json(&store, template).unwrap_err();
         assert!(matches!(err, Error::Template(_)));
+    }
+
+    #[test]
+    fn test_json_escapes_special_chars_in_value() {
+        let store = MockStore::new();
+        // Key value with characters that need JSON escaping
+        store
+            .set("test:special", r#"key-with-"quotes"-and-\backslash"#, KeyKind::Runtime, false)
+            .unwrap();
+        let template = r#"{"key": "{{lkr:test:special}}"}"#;
+        let result = generate_json(&store, template).unwrap();
+
+        // The output must be valid JSON — quotes and backslashes escaped
+        assert!(result.content.contains(r#"key-with-\"quotes\"-and-\\backslash"#));
+        assert!(result.resolutions[0].key_name.is_some());
     }
 
     // -- Format detection --

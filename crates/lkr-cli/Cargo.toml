@@ -18,3 +18,4 @@ rpassword = "5"
 arboard = "3"
 serde_json = { workspace = true }
 tokio = { workspace = true }
+zeroize = { workspace = true }

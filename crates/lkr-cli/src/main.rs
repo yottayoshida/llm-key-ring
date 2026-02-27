@@ -1,6 +1,7 @@
 use clap::{Parser, Subcommand};
 use lkr_core::{KeyKind, KeyStore, KeychainStore, mask_value};
 use std::io::{self, IsTerminal, Write};
+use zeroize::Zeroizing;
 
 #[derive(Parser)]
 #[command(
@@ -214,11 +215,12 @@ fn cmd_set(store: &impl KeyStore, name: &str, kind_str: &str, force: bool) -> lk
     })?;
 
     // Read value from prompt (not CLI args — prevents shell history exposure)
+    // Wrapped in Zeroizing to zero memory on drop.
     eprint!("Enter API key for {}: ", name);
     io::stderr().flush().ok();
-    let value = rpassword::read_password().map_err(|e| {
+    let value = Zeroizing::new(rpassword::read_password().map_err(|e| {
         lkr_core::Error::Keychain(format!("Failed to read input: {}", e))
-    })?;
+    })?);
 
     store.set(name, value.trim(), kind, force)?;
 
@@ -569,9 +571,11 @@ fn cmd_exec(
         let listed = store.list(false)?;
         let mut pairs = Vec::new();
         for entry in &listed {
-            if let Ok((value, _kind)) = store.get(&entry.name)
-                && let Some(env_var) = lkr_core::key_to_env_var(&entry.name)
-            {
+            if let Ok((value, _kind)) = store.get(&entry.name) {
+                let env_var = lkr_core::key_to_env_var(&entry.name).unwrap_or_else(|| {
+                    // Unknown provider → use key name as env var (uppercased, : → _)
+                    entry.name.to_uppercase().replace(':', "_")
+                });
                 pairs.push((env_var, value));
             }
         }
