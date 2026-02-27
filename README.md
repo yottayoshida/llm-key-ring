@@ -11,10 +11,8 @@ $ lkr get openai:prod
 Copied to clipboard (auto-clears in 30s)
   sk-p...3xYz  (runtime)
 
-$ lkr gen .env.example -o .env
-  Resolved from Keychain:
-    OPENAI_API_KEY           <- openai:prod
-  Generated: .env (1 resolved, 0 unresolved)
+$ lkr exec -- python script.py       # Keys injected as env vars (safest)
+$ lkr gen .env.example -o .env       # Generate config from template
 ```
 
 ## Why?
@@ -66,7 +64,19 @@ lkr list --all          # Include admin keys
 lkr list --json         # JSON output
 ```
 
+### Run a command with keys as env vars (recommended)
+
+```bash
+lkr exec -- python script.py                # Inject all runtime keys
+lkr exec -k openai:prod -- curl ...         # Inject specific keys only
+lkr exec -k openai:prod -k anthropic:main -- node app.js
+```
+
+Keys are mapped to conventional env var names (e.g., `openai:prod` → `OPENAI_API_KEY`) and injected into the child process. Only `runtime` keys are injected — `admin` keys are excluded by design. **Keys never appear in stdout, files, or clipboard** — this is the safest way to pass secrets to programs. Prefer `exec` over `gen` whenever possible.
+
 ### Generate config from template
+
+Use `gen` when the target program requires a config file and cannot accept env vars:
 
 ```bash
 lkr gen .env.example              # → .env (auto-derived output path)
@@ -92,15 +102,7 @@ ANTHROPIC_API_KEY=              # ← resolved from anthropic:*
 
 Generated files are written with `0600` permissions. A warning is shown if the output file is not in `.gitignore`.
 
-### Run a command with keys as env vars (safest)
-
-```bash
-lkr exec -- python script.py                # Inject all runtime keys
-lkr exec -k openai:prod -- curl ...         # Inject specific keys only
-lkr exec -k openai:prod -k anthropic:main -- node app.js
-```
-
-Keys are mapped to conventional env var names (e.g., `openai:prod` → `OPENAI_API_KEY`) and injected into the child process. **Keys never appear in stdout, files, or clipboard** — this is the safest way to pass secrets to programs.
+When multiple runtime keys exist for the same provider (e.g., `openai:prod` and `openai:stg`), the alphabetically first key is used. A warning lists alternatives. Use `{{lkr:provider:label}}` placeholders for explicit control.
 
 ### Delete a key
 
@@ -161,7 +163,7 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the full threat model. Key protecti
 | Shell history exposure | `lkr set` reads from prompt, never from CLI arguments |
 | Clipboard residual | 30s auto-clear via SHA-256 hash comparison |
 | Terminal shoulder-surfing | Masked by default (`sk-p...3xYz`) |
-| **AI agent exfiltration** | **TTY guard blocks `--plain`/`--show` in non-interactive environments** |
+| **AI agent exfiltration** | **TTY guard (`isatty`) blocks `--plain`/`--show` in non-interactive environments** |
 | Memory forensics | `zeroize::Zeroizing<String>` zeroes memory on drop |
 | Admin key in templates | `lkr gen` only resolves `runtime` keys |
 | Accidental git commit | `.gitignore` coverage check on generated files |
@@ -169,6 +171,10 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the full threat model. Key protecti
 ### Agent IDE Attack Protection
 
 AI coding assistants (Cursor, Copilot, etc.) can be tricked via prompt injection into running commands that exfiltrate secrets. `lkr` defends against this with three layers:
+
+**What TTY guard protects against**: non-interactive exfiltration — agents piping `--plain`/`--show` output or reading clipboard via `pbpaste`.
+
+**What it does NOT protect against**: a user being socially engineered into running `--show` in their own terminal. Use `lkr exec` as the default workflow to minimize this surface.
 
 ```bash
 # Layer 1: --plain/--show blocked in pipes (exit code 2)
@@ -181,8 +187,8 @@ echo | lkr get openai:prod
 # → prevents `lkr get key && pbpaste` bypass
 
 # Layer 3: Safe alternatives for automation
-lkr exec -- python script.py   # Keys in env vars only (never stdout/file/clipboard)
-lkr gen .env.example -o .env   # Keys to file (0600), never stdout
+lkr exec -- python script.py   # Recommended: keys in env vars only (never stdout/file/clipboard)
+lkr gen .env.example -o .env   # Fallback: keys to file (0600), never stdout
 ```
 
 ## Architecture

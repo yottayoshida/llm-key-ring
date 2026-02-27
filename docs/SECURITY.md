@@ -34,9 +34,10 @@ Malicious prompt injection → AI agent executes → lkr get openai:prod --plain
 **Mitigations** (three layers):
 
 1. **TTY Guard — stdout blocked** (`--plain` / `--show` rejected in non-interactive environments):
-   - `std::io::IsTerminal` checks whether stdout is a terminal
+   - Detection: `std::io::IsTerminal` (wraps libc `isatty(2)` on stdout fd)
    - If not a TTY (pipe, agent subprocess), `--plain` and `--show` are rejected with exit code 2
    - `--force-plain` provides explicit override with warning (user accepts risk)
+   - **Note**: `TERM`, `CI`, or other env vars are NOT checked — the guard relies solely on fd-level TTY detection
 
 2. **TTY Guard — clipboard blocked** (prevents `lkr get key && pbpaste` bypass):
    - In non-interactive environments, `lkr get` skips clipboard copy entirely
@@ -44,6 +45,7 @@ Malicious prompt injection → AI agent executes → lkr get openai:prod --plain
 
 3. **`lkr exec` — safest automation path** (keys never leave the process boundary):
    - Injects Keychain keys as environment variables into a child process
+   - **Only `runtime` keys are injected** — `admin` keys are excluded by design (`store.list(false)`)
    - Keys never appear in stdout, files, or clipboard
    - `lkr exec -- python script.py` sets `OPENAI_API_KEY` etc. in the child's env only
    - The agent cannot observe the env vars of the child process
@@ -53,7 +55,13 @@ Malicious prompt injection → AI agent executes → lkr get openai:prod --plain
    - Keys are written to files (not stdout), with `0600` permissions
    - **Caveat**: an agent with file access can still `cat .env` — use `lkr exec` when possible
 
-5. **`zeroize` for memory hygiene**:
+5. **`lkr gen` key resolution rules**:
+   - For `.env.example` format, env var names are matched **exactly** (not by prefix) to prevent over-broad substitution (e.g., `AWS_REGION` is never overwritten)
+   - When multiple runtime keys exist for the same provider (e.g., `openai:prod` and `openai:stg`), the **alphabetically first key** is used deterministically
+   - A warning lists alternative keys when ambiguity exists (e.g., `(also available: openai:stg)`)
+   - For `{{lkr:provider:label}}` placeholders, the key name is explicit — no ambiguity
+
+6. **`zeroize` for memory hygiene**:
    - `KeyStore::get()` returns `Zeroizing<String>` — memory is zeroed when the value goes out of scope
    - `Zeroizing<String>` intentionally does NOT implement `Display`, preventing accidental `println!("{}", value)` — you must explicitly dereference with `&*value`
 
@@ -68,6 +76,9 @@ These are **out of scope** — users should be aware of these limitations:
 | Keychain unlocked while machine unattended | macOS Keychain stays unlocked during a login session | Lock screen when away; configure Keychain auto-lock timeout |
 | Key transmitted over network after retrieval | LKR is local-only; what happens after `lkr get` is up to the caller | Use TLS for API calls; rotate keys regularly |
 | Clipboard manager capturing copied keys | Third-party clipboard managers may persist clipboard history | Disable clipboard managers for sensitive content; 30s auto-clear mitigates casual exposure |
+| IDE with pseudo-TTY (pty) bypasses TTY guard | Some IDEs allocate a pty for their integrated terminal; `isatty` returns true | TTY guard is defense-in-depth, not absolute; use `lkr exec` as the primary automation path |
+| Child process logs env vars after `lkr exec` | Once keys are in the child's env, LKR has no control over what the child does | Audit child programs; avoid passing keys to untrusted commands |
+| Clipboard race condition (multi-app) | Between copy and 30s clear, another app may read the clipboard | SHA-256 hash comparison prevents clearing user's own data; clipboard managers remain a risk (see above) |
 
 ## Security Design Principles
 
