@@ -12,7 +12,7 @@ and the design decisions behind each mitigation.
 | T2 | Shell history exposure | High | `lkr set` reads via hidden prompt (rpassword), never accepts key as CLI argument | Implemented |
 | T3 | Clipboard residual | Medium | 30s auto-clear via detached background process; hash comparison prevents clearing user's own clipboard | Implemented |
 | T4 | Terminal display leakage | Medium | Default masked output (`sk-p...wxyz`); `--show` required for plaintext | Implemented |
-| T5 | Agent IDE key exfiltration (Antigravity-style) | High | TTY guard blocks `--plain`/`--show` AND clipboard copy in non-interactive environments; `lkr exec` for safe automation | Implemented |
+| T5 | Agent IDE key exfiltration | High | TTY guard blocks `--plain`/`--show` AND clipboard copy in non-interactive environments; `lkr exec` for safe automation | Implemented |
 | T6 | Memory dump / core dump | Medium | `zeroize::Zeroizing<String>` zeroes memory on drop | Implemented |
 | T7 | Admin key misuse via templates | Medium | `lkr gen` only resolves `runtime` keys; `admin` keys are rejected | Implemented |
 | T8 | Generated file committed to Git | Medium | `.gitignore` check warning on `lkr gen` output | Implemented |
@@ -20,11 +20,11 @@ and the design decisions behind each mitigation.
 
 ## Detailed Threat Analysis
 
-### T5: Agent IDE Key Exfiltration (Antigravity-style Attack)
+### T5: Agent IDE Key Exfiltration
 
-**Background**: In November 2025, researchers demonstrated that AI-powered IDEs (e.g., Google Project IDX)
-could be manipulated via prompt injection to execute commands like `cat .env` or CLI tools that output
-secrets, exfiltrating API keys through the AI agent's context window.
+**Background**: AI-powered IDEs (Cursor, Copilot, etc.) can be manipulated via prompt injection
+to execute commands like `cat .env` or CLI tools that output secrets, exfiltrating API keys
+through the AI agent's context window.
 
 **Attack vector with LKR**:
 ```

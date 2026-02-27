@@ -239,7 +239,7 @@ fn cmd_get(
     let is_tty = io::stdout().is_terminal();
 
     // TTY guard: block --plain and --show in non-interactive environments
-    // to prevent agent IDE attacks (Antigravity-style prompt injection).
+    // to prevent Agent IDE attacks (prompt injection → key exfiltration).
     if (plain || show) && !is_tty && !force_plain {
         eprintln!("Error: --plain and --show are blocked in non-interactive environments.");
         eprintln!("  This prevents AI agents from extracting raw API keys via pipe.");

@@ -166,7 +166,7 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the full threat model. Key protecti
 | Admin key in templates | `lkr gen` only resolves `runtime` keys |
 | Accidental git commit | `.gitignore` coverage check on generated files |
 
-### Agent IDE Protection (Antigravity Attack)
+### Agent IDE Attack Protection
 
 AI coding assistants (Cursor, Copilot, etc.) can be tricked via prompt injection into running commands that exfiltrate secrets. `lkr` defends against this with three layers:
 
