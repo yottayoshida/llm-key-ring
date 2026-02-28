@@ -217,18 +217,12 @@ async fn fetch_openai_cost(store: &impl KeyStore) -> Result<CostReport> {
     // admin_key is Zeroizing<String>; explicit drop zeroes memory before response parsing
     drop(admin_key);
 
-    let status = resp.status().as_u16();
-    if status == 401 || status == 403 {
-        return Err(Error::Usage(
-            "OpenAI admin key is invalid or expired. \
-             Create a new one at: https://platform.openai.com/settings/organization/admin-keys"
-                .to_string(),
-        ));
-    }
-    if !resp.status().is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(Error::HttpError { status, body });
-    }
+    let resp = check_response(
+        resp,
+        "OpenAI admin key is invalid or expired. \
+         Create a new one at: https://platform.openai.com/settings/organization/admin-keys",
+    )
+    .await?;
 
     let body: OpenAiCostsResponse = resp
         .json()
@@ -256,7 +250,7 @@ async fn fetch_openai_cost(store: &impl KeyStore) -> Result<CostReport> {
                 cost_cents: cost_cents.round(),
             })
             .collect();
-        items.sort_by(|a, b| b.cost_cents.partial_cmp(&a.cost_cents).unwrap_or(std::cmp::Ordering::Equal));
+        sort_by_cost_desc(&mut items);
         items
     };
 
@@ -321,19 +315,13 @@ async fn fetch_anthropic_cost(store: &impl KeyStore) -> Result<CostReport> {
 
     drop(admin_key);
 
-    let status = resp.status().as_u16();
-    if status == 401 || status == 403 {
-        return Err(Error::Usage(
-            "Anthropic admin key is invalid or requires an Organization account.\n  \
-             Individual accounts cannot use the Usage API.\n  \
-             View your usage at: https://console.anthropic.com/settings/billing"
-                .to_string(),
-        ));
-    }
-    if !resp.status().is_success() {
-        let body = resp.text().await.unwrap_or_default();
-        return Err(Error::HttpError { status, body });
-    }
+    let resp = check_response(
+        resp,
+        "Anthropic admin key is invalid or requires an Organization account.\n  \
+         Individual accounts cannot use the Usage API.\n  \
+         View your usage at: https://console.anthropic.com/settings/billing",
+    )
+    .await?;
 
     let body: AnthropicCostResponse = resp
         .json()
@@ -352,7 +340,7 @@ async fn fetch_anthropic_cost(store: &impl KeyStore) -> Result<CostReport> {
                 cost_cents: r.amount.parse::<f64>().unwrap_or(0.0),
             })
             .collect();
-        items.sort_by(|a, b| b.cost_cents.partial_cmp(&a.cost_cents).unwrap_or(std::cmp::Ordering::Equal));
+        sort_by_cost_desc(&mut items);
         items
     };
 
@@ -378,6 +366,28 @@ fn http_client() -> reqwest::Client {
         .timeout(Duration::from_secs(30))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Check HTTP response status, returning a typed error for auth failures.
+async fn check_response(resp: reqwest::Response, auth_error_msg: &str) -> Result<reqwest::Response> {
+    let status = resp.status().as_u16();
+    if status == 401 || status == 403 {
+        return Err(Error::Usage(auth_error_msg.to_string()));
+    }
+    if !resp.status().is_success() {
+        let body = resp.text().await.unwrap_or_default();
+        return Err(Error::HttpError { status, body });
+    }
+    Ok(resp)
+}
+
+/// Sort cost line items by cost descending.
+fn sort_by_cost_desc(items: &mut Vec<CostLineItem>) {
+    items.sort_by(|a, b| {
+        b.cost_cents
+            .partial_cmp(&a.cost_cents)
+            .unwrap_or(std::cmp::Ordering::Equal)
+    });
 }
 
 /// Retrieve the admin key for a provider from KeyStore.

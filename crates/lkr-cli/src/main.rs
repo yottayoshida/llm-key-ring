@@ -110,15 +110,14 @@ enum Commands {
     },
 }
 
-fn parse_kind(s: &str) -> Result<KeyKind, String> {
-    match s {
-        "runtime" => Ok(KeyKind::Runtime),
-        "admin" => Ok(KeyKind::Admin),
-        _ => Err(format!(
-            "Invalid kind '{}'. Must be 'runtime' or 'admin'.",
-            s
-        )),
-    }
+/// Prompt the user for y/N confirmation on stderr.
+/// Returns true if the user typed "y" (case-insensitive).
+fn confirm(prompt: &str) -> bool {
+    eprint!("{}", prompt);
+    io::stderr().flush().ok();
+    let mut input = String::new();
+    io::stdin().read_line(&mut input).ok();
+    input.trim().eq_ignore_ascii_case("y")
 }
 
 /// Spawn a detached background process that clears the clipboard after `seconds`.
@@ -209,7 +208,7 @@ fn main() {
 }
 
 fn cmd_set(store: &impl KeyStore, name: &str, kind_str: &str, force: bool) -> lkr_core::Result<()> {
-    let kind = parse_kind(kind_str).map_err(|reason| lkr_core::Error::InvalidKeyName {
+    let kind: KeyKind = kind_str.parse().map_err(|reason| lkr_core::Error::InvalidKeyName {
         name: name.to_string(),
         reason,
     })?;
@@ -467,18 +466,15 @@ fn cmd_gen(
     };
 
     // Check if output exists and not --force
-    if output_path.exists() && !force {
-        eprint!(
+    if output_path.exists()
+        && !force
+        && !confirm(&format!(
             "Output file '{}' already exists. Overwrite? [y/N] ",
             output_path.display()
-        );
-        io::stderr().flush().ok();
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).ok();
-        if !input.trim().eq_ignore_ascii_case("y") {
-            eprintln!("Cancelled.");
-            return Ok(());
-        }
+        ))
+    {
+        eprintln!("Cancelled.");
+        return Ok(());
     }
 
     // .gitignore check (skipped outside git repos)
@@ -538,15 +534,9 @@ fn cmd_gen(
 }
 
 fn cmd_rm(store: &impl KeyStore, name: &str, force: bool) -> lkr_core::Result<()> {
-    if !force {
-        eprint!("Remove key '{}'? [y/N] ", name);
-        io::stderr().flush().ok();
-        let mut input = String::new();
-        io::stdin().read_line(&mut input).ok();
-        if !input.trim().eq_ignore_ascii_case("y") {
-            eprintln!("Cancelled.");
-            return Ok(());
-        }
+    if !force && !confirm(&format!("Remove key '{}'? [y/N] ", name)) {
+        eprintln!("Cancelled.");
+        return Ok(());
     }
 
     store.delete(name)?;
@@ -572,11 +562,7 @@ fn cmd_exec(
         let mut pairs = Vec::new();
         for entry in &listed {
             if let Ok((value, _kind)) = store.get(&entry.name) {
-                let env_var = lkr_core::key_to_env_var(&entry.name).unwrap_or_else(|| {
-                    // Unknown provider → use key name as env var (uppercased, : → _)
-                    entry.name.to_uppercase().replace(':', "_")
-                });
-                pairs.push((env_var, value));
+                pairs.push((lkr_core::key_to_env_var(&entry.name), value));
             }
         }
         pairs
@@ -585,11 +571,7 @@ fn cmd_exec(
         let mut pairs = Vec::new();
         for key_name in keys {
             let (value, _kind) = store.get(key_name)?;
-            let env_var = lkr_core::key_to_env_var(key_name).unwrap_or_else(|| {
-                // Unknown provider → use key name as env var (uppercased, : → _)
-                key_name.to_uppercase().replace(':', "_")
-            });
-            pairs.push((env_var, value));
+            pairs.push((lkr_core::key_to_env_var(key_name), value));
         }
         pairs
     };

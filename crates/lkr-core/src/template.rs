@@ -60,16 +60,20 @@ const ENV_VAR_MAP: &[(&str, &str)] = &[
 ];
 
 /// Map a key name (e.g. `openai:prod`) to a conventional env var name
-/// (e.g. `OPENAI_API_KEY`).  Returns `None` if the provider is not in
-/// `ENV_VAR_MAP`.
-pub fn key_to_env_var(key_name: &str) -> Option<String> {
-    let provider = key_name.split(':').next()?;
+/// (e.g. `OPENAI_API_KEY`).
+///
+/// For known providers, returns the mapped env var (e.g. `OPENAI_API_KEY`).
+/// For unknown providers, falls back to uppercased key name with `:` → `_`
+/// (e.g. `custom:dev` → `CUSTOM_DEV`).
+pub fn key_to_env_var(key_name: &str) -> String {
+    let provider = key_name.split(':').next().unwrap_or(key_name);
     for &(env_var, prov) in ENV_VAR_MAP {
         if prov == provider {
-            return Some(env_var.to_string());
+            return env_var.to_string();
         }
     }
-    None
+    // Unknown provider → uppercase key name, colon to underscore
+    key_name.to_uppercase().replace(':', "_")
 }
 
 // ---------------------------------------------------------------------------

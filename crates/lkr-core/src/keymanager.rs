@@ -30,6 +30,21 @@ impl std::fmt::Display for KeyKind {
     }
 }
 
+impl std::str::FromStr for KeyKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s {
+            "runtime" => Ok(KeyKind::Runtime),
+            "admin" => Ok(KeyKind::Admin),
+            _ => Err(format!(
+                "Invalid kind '{}'. Must be 'runtime' or 'admin'.",
+                s
+            )),
+        }
+    }
+}
+
 /// Metadata stored alongside each key in Keychain.
 /// Serialized as JSON in the Keychain password field:
 ///   { "value": "<actual-api-key>", "kind": "runtime" }
@@ -98,15 +113,14 @@ fn validate_name(name: &str) -> Result<(String, String)> {
 }
 
 /// Mask an API key for display: "sk-proj-abc...xyz" → "sk-p...wxyz"
-/// Uses char-based slicing to avoid panics on non-ASCII input.
+/// Uses char iterators to avoid allocating the full char vec.
 pub fn mask_value(value: &str) -> String {
-    let chars: Vec<char> = value.chars().collect();
-    let len = chars.len();
+    let len = value.chars().count();
     if len <= 8 {
         return "*".repeat(len);
     }
-    let prefix: String = chars[..4].iter().collect();
-    let suffix: String = chars[len - 4..].iter().collect();
+    let prefix: String = value.chars().take(4).collect();
+    let suffix: String = value.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
     format!("{}...{}", prefix, suffix)
 }
 
@@ -346,15 +360,15 @@ impl KeyStore for MockStore {
         let mut entries: Vec<KeyEntry> = keys
             .iter()
             .filter(|(_, v)| include_admin || v.kind == KeyKind::Runtime)
-            .map(|(name, v)| {
-                let (provider, label) = validate_name(name).unwrap();
-                KeyEntry {
+            .filter_map(|(name, v)| {
+                let (provider, label) = validate_name(name).ok()?;
+                Some(KeyEntry {
                     name: name.clone(),
                     provider,
                     label,
                     kind: v.kind,
                     masked_value: mask_value(&v.value),
-                }
+                })
             })
             .collect();
         entries.sort_by(|a, b| a.name.cmp(&b.name));
