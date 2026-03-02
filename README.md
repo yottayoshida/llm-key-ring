@@ -197,15 +197,14 @@ lkr gen .env.example -o .env   # Fallback: keys to file (0600), never stdout
 llm-key-ring/
 ├── crates/
 │   ├── lkr-core/     # Library: KeyStore trait, Keychain, templates, usage API
-│   ├── lkr-cli/      # Binary: clap CLI (set/get/list/rm/gen/usage/exec)
-│   └── lkr-app/      # Binary: Tauri v2 menu bar app (planned)
+│   └── lkr-cli/      # Binary: clap CLI (set/get/list/rm/gen/usage/exec)
 ├── docs/
 │   └── SECURITY.md   # Threat model
 ├── LICENSE-MIT
 └── LICENSE-APACHE
 ```
 
-All business logic lives in `lkr-core`. The CLI is a thin wrapper. The Tauri menu bar app is planned for future development.
+All business logic lives in `lkr-core`. The CLI is a thin wrapper.
 
 ### Platform Support
 

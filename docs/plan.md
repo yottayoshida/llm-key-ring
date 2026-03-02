@@ -2,7 +2,9 @@
 
 ## 概要
 
-macOS Keychainを活用したLLM APIキーマネージャー。APIキーを暗号化保存し、CLI + Tauriメニューバーアプリから操作可能。`.env` / `.mcp.json` テンプレート生成、OpenAI/Anthropicの使用量トラッキングを統合した、個人開発者向けローカルファーストツール。
+macOS Keychainを活用したLLM APIキーマネージャー。APIキーを暗号化保存し、CLIから操作可能。`.env` / `.mcp.json` テンプレート生成、OpenAI/Anthropicの使用量トラッキングを統合した、個人開発者向けローカルファーストツール。
+
+> **注記（2026-03-02）**: Tauri v2 メニューバーGUIアプリは棚上げ。理由: (1) CLIターゲットユーザー（開発者）に対するUX改善幅が小さい（3秒の短縮程度）、(2) Computer Use等のデスクトップ操作AIがマルウェア感染した場合、GUIクリック→クリップボードコピーの経路でキー奪取が可能になる（CLIのTTYガードに相当する防御がGUIに存在しない）。`crates/lkr-app/` は参考コードとして残すが、workspaceからは除外済み。
 
 ## 非機能要件（合意済み）
 
@@ -177,7 +179,12 @@ JSON内は `{{lkr:keyname}}` 記法で明示指定。
 | Admin Key露出 | `kind=admin` は `list`/`gen` のデフォルト対象外。マスキング強制 |
 | Tauriフロント側侵害 | Tauri capabilities を最小権限で設定。remote API access は原則無効 |
 
-### メニューバーアプリ設計
+### メニューバーアプリ設計（棚上げ）
+
+> **棚上げ（2026-03-02）**: 上記「注記」参照。以下は設計記録として残す。
+
+<details>
+<summary>棚上げ済みの設計案</summary>
 
 ```
 [🔑] ← メニューバーアイコン（状態: 通常/警告/超過）
@@ -201,17 +208,17 @@ JSON内は `{{lkr:keyname}}` 記法で明示指定。
   └── Quit
 ```
 
+</details>
+
 ## 実装ステップ（概要レベル）
 
 | Phase | 内容 | 成果物 |
 |-------|------|--------|
-| 1 | Cargo Workspace構築 + `lkr-core` KeyManager（set/get/rm/list）+ `lkr-cli` 基本コマンド + **Tauri最小スケルトン** | CLIでKeychain CRUD動作 + Tauriビルド通る |
+| 1 | Cargo Workspace構築 + `lkr-core` KeyManager（set/get/rm/list）+ `lkr-cli` 基本コマンド | CLIでKeychain CRUD動作 |
 | 2 | TemplateGenerator（`.env.example` → `.env` / `.mcp.json` 生成）+ `lkr import` | テンプレート生成動作 |
 | 3 | UsageTracker（OpenAI/Anthropic API統合）+ `lkr usage` + キー種別管理（admin/runtime） | 使用量表示動作 |
-| 4 | Tauriメニューバーアプリ本格実装（キー一覧、Quick Copy、使用量表示） | メニューバーアプリ動作 |
-| 5 | Homebrew tap + GitHub Actions CI/CD + Universal Binary + SHA256検証 | `brew install` で配布可能 |
-
-> **Codexレビュー反映**: Phase 1でTauri最小スケルトン（set/getだけのIPC）を並走させ、CLI↔Tauriの境界面を早期に固める。Phase 4まで寝かせるとIPC/権限モデル差分が後半で爆発するリスクを回避。
+| ~~4~~ | ~~Tauriメニューバーアプリ本格実装~~ | **棚上げ（2026-03-02）** |
+| 5 | cargo publish + GitHub Actions CI/CD + Homebrew tap + SHA256検証 | crates.io + `brew install` で配布可能 |
 
 ※詳細タスク分解は /develop Phase 2 で実施
 
@@ -223,7 +230,7 @@ JSON内は `{{lkr:keyname}}` 記法で明示指定。
 | `Cargo.toml` | Workspace定義 |
 | `crates/lkr-core/` | コアライブラリ（KeyManager, TemplateGen, UsageTracker） |
 | `crates/lkr-cli/` | CLIバイナリ（clap） |
-| `crates/lkr-app/` | Tauriメニューバーアプリ |
+| ~~`crates/lkr-app/`~~ | ~~Tauriメニューバーアプリ~~ （棚上げ。workspace除外済み） |
 | `templates/` | サンプルテンプレート |
 | `.github/workflows/` | CI/CD（テスト + ビルド + Homebrew更新） |
 
@@ -246,7 +253,7 @@ JSON内は `{{lkr:keyname}}` 記法で明示指定。
 - [ ] `lkr set openai:prod` → `lkr get openai:prod` でKeychain経由のCRUDが動作する
 - [ ] `lkr gen .env.example -o .env` でKeychainからキーを解決した`.env`が生成される
 - [ ] `lkr usage` でOpenAI/Anthropicの使用量が表示される（Admin Key設定時）
-- [ ] Tauriメニューバーアプリでキー一覧・Quick Copyが動作する
+- [ ] ~~Tauriメニューバーアプリでキー一覧・Quick Copyが動作する~~ （棚上げ）
 - [ ] 初回セットアップが3分以内で完了する
 - [ ] キー取得がCLIで3秒以内、メニューバーで2秒以内
 - [ ] `brew install yottayoshida/tap/lkr` でインストール可能
@@ -256,7 +263,7 @@ JSON内は `{{lkr:keyname}}` 記法で明示指定。
 
 ### 重点検証ポイント
 
-- [ ] CLI `lkr set` で登録したキーをTauriが正しく読み取れるか（service/account一致）
+- [ ] ~~CLI `lkr set` で登録したキーをTauriが正しく読み取れるか~~ （棚上げ）
 - [ ] Keychainロック状態（スリープ復帰直後等）での各コマンドのエラー挙動
 - [ ] `.env`/`.mcp.json`生成後のファイルパーミッションが`0600`であること
 - [ ] `lkr get`出力がシェル履歴・プロセスリスト経由で露出しないこと
