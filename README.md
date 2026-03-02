@@ -1,5 +1,9 @@
 # LLM Key Ring (`lkr`)
 
+[![CI](https://github.com/yottayoshida/llm-key-ring/actions/workflows/ci.yml/badge.svg)](https://github.com/yottayoshida/llm-key-ring/actions/workflows/ci.yml)
+[![crates.io](https://img.shields.io/crates/v/lkr-cli.svg)](https://crates.io/crates/lkr-cli)
+[![docs.rs](https://docs.rs/lkr-core/badge.svg)](https://docs.rs/lkr-core)
+
 A secure CLI tool for managing LLM API keys via macOS Keychain. No more plaintext keys in `.env` files.
 
 ```
@@ -224,7 +228,7 @@ Currently macOS only (uses native Keychain via `security-framework`). The `KeySt
 # Build
 cargo build
 
-# Test (42 tests)
+# Test
 cargo test
 
 # Clippy

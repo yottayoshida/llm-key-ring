@@ -163,7 +163,9 @@ fn generate_env(store: &impl KeyStore, content: &str) -> Result<GenResult> {
             let var_name = trimmed[..eq_pos].trim();
 
             // Try to resolve from Keychain
-            if let Some((key_name, value, alternatives)) = resolve_env_var(store, var_name, &provider_map) {
+            if let Some((key_name, value, alternatives)) =
+                resolve_env_var(store, var_name, &provider_map)
+            {
                 output.push_str(&format!("{}={}\n", var_name, &*value));
                 resolutions.push(Resolution {
                     placeholder: var_name.to_string(),
@@ -272,12 +274,7 @@ fn generate_json(store: &impl KeyStore, content: &str) -> Result<GenResult> {
                 // Escape special JSON characters in the value to prevent
                 // broken JSON output if a key contains ", \, or control chars.
                 let escaped = escape_json_value(&value);
-                output = format!(
-                    "{}{}{}",
-                    &output[..start],
-                    escaped,
-                    &output[end..]
-                );
+                output = format!("{}{}{}", &output[..start], escaped, &output[end..]);
                 resolutions.push(Resolution {
                     placeholder,
                     key_name: Some(key_name),
@@ -340,10 +337,7 @@ fn write_secure(path: &Path, content: &str) -> Result<()> {
     let parent = path.parent().unwrap_or(Path::new("."));
 
     // Write to temp file first
-    let tmp_path = parent.join(format!(
-        ".lkr-gen-{}.tmp",
-        std::process::id()
-    ));
+    let tmp_path = parent.join(format!(".lkr-gen-{}.tmp", std::process::id()));
 
     let mut file = fs::OpenOptions::new()
         .write(true)
@@ -362,11 +356,7 @@ fn write_secure(path: &Path, content: &str) -> Result<()> {
     fs::rename(&tmp_path, path).map_err(|e| {
         // Clean up temp file on failure
         let _ = fs::remove_file(&tmp_path);
-        Error::Template(format!(
-            "Cannot rename to '{}': {}",
-            path.display(),
-            e
-        ))
+        Error::Template(format!("Cannot rename to '{}': {}", path.display(), e))
     })?;
 
     Ok(())
@@ -384,10 +374,20 @@ mod tests {
     fn setup_store() -> MockStore {
         let store = MockStore::new();
         store
-            .set("openai:prod", "sk-test-openai-key-12345678", KeyKind::Runtime, false)
+            .set(
+                "openai:prod",
+                "sk-test-openai-key-12345678",
+                KeyKind::Runtime,
+                false,
+            )
             .unwrap();
         store
-            .set("anthropic:main", "sk-ant-test-key-87654321", KeyKind::Runtime, false)
+            .set(
+                "anthropic:main",
+                "sk-ant-test-key-87654321",
+                KeyKind::Runtime,
+                false,
+            )
             .unwrap();
         store
     }
@@ -405,9 +405,21 @@ DATABASE_URL=postgres://localhost/mydb
 ";
         let result = generate_env(&store, template).unwrap();
 
-        assert!(result.content.contains("OPENAI_API_KEY=sk-test-openai-key-12345678"));
-        assert!(result.content.contains("ANTHROPIC_API_KEY=sk-ant-test-key-87654321"));
-        assert!(result.content.contains("DATABASE_URL=postgres://localhost/mydb"));
+        assert!(
+            result
+                .content
+                .contains("OPENAI_API_KEY=sk-test-openai-key-12345678")
+        );
+        assert!(
+            result
+                .content
+                .contains("ANTHROPIC_API_KEY=sk-ant-test-key-87654321")
+        );
+        assert!(
+            result
+                .content
+                .contains("DATABASE_URL=postgres://localhost/mydb")
+        );
         assert!(result.content.contains("# My config"));
 
         assert_eq!(result.resolutions.len(), 3);
@@ -472,7 +484,11 @@ AWS_DEFAULT_REGION=ap-northeast-1
 }"#;
         let result = generate_json(&store, template).unwrap();
 
-        assert!(result.content.contains("\"OPENAI_API_KEY\": \"sk-test-openai-key-12345678\""));
+        assert!(
+            result
+                .content
+                .contains("\"OPENAI_API_KEY\": \"sk-test-openai-key-12345678\"")
+        );
         assert!(!result.content.contains("{{lkr:"));
         assert_eq!(result.resolutions.len(), 1);
         assert_eq!(
@@ -526,13 +542,22 @@ AWS_DEFAULT_REGION=ap-northeast-1
         let store = MockStore::new();
         // Key value with characters that need JSON escaping
         store
-            .set("test:special", r#"key-with-"quotes"-and-\backslash"#, KeyKind::Runtime, false)
+            .set(
+                "test:special",
+                r#"key-with-"quotes"-and-\backslash"#,
+                KeyKind::Runtime,
+                false,
+            )
             .unwrap();
         let template = r#"{"key": "{{lkr:test:special}}"}"#;
         let result = generate_json(&store, template).unwrap();
 
         // The output must be valid JSON — quotes and backslashes escaped
-        assert!(result.content.contains(r#"key-with-\"quotes\"-and-\\backslash"#));
+        assert!(
+            result
+                .content
+                .contains(r#"key-with-\"quotes\"-and-\\backslash"#)
+        );
         assert!(result.resolutions[0].key_name.is_some());
     }
 
@@ -542,6 +567,36 @@ AWS_DEFAULT_REGION=ap-northeast-1
     fn test_is_json_template() {
         assert!(is_json_template(r#"{"key": "{{lkr:openai:prod}}"}"#));
         assert!(!is_json_template("OPENAI_API_KEY=value"));
+    }
+
+    // -- key_to_env_var --
+
+    #[test]
+    fn test_key_to_env_var_known_providers() {
+        assert_eq!(key_to_env_var("openai:prod"), "OPENAI_API_KEY");
+        assert_eq!(key_to_env_var("anthropic:main"), "ANTHROPIC_API_KEY");
+        assert_eq!(key_to_env_var("google:dev"), "GOOGLE_API_KEY");
+        assert_eq!(key_to_env_var("deepseek:api"), "DEEPSEEK_API_KEY");
+        assert_eq!(key_to_env_var("xai:prod"), "XAI_API_KEY");
+    }
+
+    #[test]
+    fn test_key_to_env_var_unknown_provider() {
+        assert_eq!(key_to_env_var("custom:dev"), "CUSTOM_DEV");
+        assert_eq!(key_to_env_var("my-service:prod"), "MY-SERVICE_PROD");
+    }
+
+    #[test]
+    fn test_key_to_env_var_label_independence() {
+        // Known providers: label doesn't affect env var name
+        assert_eq!(
+            key_to_env_var("openai:prod"),
+            key_to_env_var("openai:staging")
+        );
+        assert_eq!(
+            key_to_env_var("anthropic:main"),
+            key_to_env_var("anthropic:test")
+        );
     }
 
     // -- Secure writing --

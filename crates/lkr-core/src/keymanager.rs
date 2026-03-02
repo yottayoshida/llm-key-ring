@@ -1,10 +1,10 @@
-use crate::error::{Error, Result};
 use crate::SERVICE_NAME;
+use crate::error::{Error, Result};
 use core_foundation::base::TCFType;
 use core_foundation::string::CFString;
-use serde::{Deserialize, Serialize};
 use security_framework::item::{ItemClass, ItemSearchOptions, Limit, SearchResult};
 use security_framework_sys::item::kSecAttrAccount;
+use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::sync::Mutex;
 use zeroize::{Zeroize, Zeroizing};
@@ -96,10 +96,7 @@ fn validate_name(name: &str) -> Result<(String, String)> {
     if !re_part(provider) {
         return Err(Error::InvalidKeyName {
             name: name.to_string(),
-            reason: format!(
-                "Provider '{}' must match [a-z0-9][a-z0-9-]*",
-                provider
-            ),
+            reason: format!("Provider '{}' must match [a-z0-9][a-z0-9-]*", provider),
         });
     }
     if !re_part(label) {
@@ -120,7 +117,14 @@ pub fn mask_value(value: &str) -> String {
         return "*".repeat(len);
     }
     let prefix: String = value.chars().take(4).collect();
-    let suffix: String = value.chars().rev().take(4).collect::<Vec<_>>().into_iter().rev().collect();
+    let suffix: String = value
+        .chars()
+        .rev()
+        .take(4)
+        .collect::<Vec<_>>()
+        .into_iter()
+        .rev()
+        .collect();
     format!("{}...{}", prefix, suffix)
 }
 
@@ -439,6 +443,24 @@ mod tests {
         assert_eq!(mask_value("123456789"), "1234...6789");
     }
 
+    #[test]
+    fn test_mask_value_empty() {
+        assert_eq!(mask_value(""), "");
+    }
+
+    #[test]
+    fn test_mask_value_single_char() {
+        assert_eq!(mask_value("x"), "*");
+    }
+
+    #[test]
+    fn test_mask_value_unicode() {
+        // 4-char Unicode string (≤8 chars → all masked)
+        assert_eq!(mask_value("日本語テスト"), "******");
+        // 9+ chars → prefix 4 + ... + suffix 4
+        assert_eq!(mask_value("あいうえおかきくけ"), "あいうえ...かきくけ");
+    }
+
     // -- Set / Get --
 
     #[test]
@@ -555,8 +577,7 @@ mod tests {
     fn test_list_sorted() {
         let s = store();
         s.set("zzz:last", "val", KeyKind::Runtime, false).unwrap();
-        s.set("aaa:first", "val", KeyKind::Runtime, false)
-            .unwrap();
+        s.set("aaa:first", "val", KeyKind::Runtime, false).unwrap();
 
         let entries = s.list(false).unwrap();
         assert_eq!(entries[0].name, "aaa:first");

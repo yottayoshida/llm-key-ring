@@ -98,9 +98,7 @@ pub async fn fetch_cost(
     refresh: bool,
 ) -> Result<CostReport> {
     // Check cache first (unless --refresh)
-    if !refresh
-        && let Some(cached) = cache.get(provider)
-    {
+    if !refresh && let Some(cached) = cache.get(provider) {
         return Ok(cached);
     }
 
@@ -143,8 +141,7 @@ pub fn available_providers(store: &impl KeyStore) -> Result<Vec<String>> {
 /// Returns (start_of_month, now) as (NaiveDate, NaiveDate).
 fn current_billing_period() -> (NaiveDate, NaiveDate) {
     let today = Utc::now().date_naive();
-    let start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1)
-        .unwrap_or(today);
+    let start = NaiveDate::from_ymd_opt(today.year(), today.month(), 1).unwrap_or(today);
     (start, today)
 }
 
@@ -187,11 +184,7 @@ async fn fetch_openai_cost(store: &impl KeyStore) -> Result<CostReport> {
     let admin_key = get_admin_key(store, "openai")?;
     let (start, end) = current_billing_period();
 
-    let start_ts = start
-        .and_hms_opt(0, 0, 0)
-        .unwrap()
-        .and_utc()
-        .timestamp();
+    let start_ts = start.and_hms_opt(0, 0, 0).unwrap().and_utc().timestamp();
     let end_ts = end
         .succ_opt()
         .unwrap_or(end)
@@ -293,10 +286,7 @@ async fn fetch_anthropic_cost(store: &impl KeyStore) -> Result<CostReport> {
     let (start, end) = current_billing_period();
 
     let start_iso = format!("{}T00:00:00Z", start);
-    let end_iso = format!(
-        "{}T00:00:00Z",
-        end.succ_opt().unwrap_or(end)
-    );
+    let end_iso = format!("{}T00:00:00Z", end.succ_opt().unwrap_or(end));
 
     let url = format!(
         "https://api.anthropic.com/v1/organizations/cost_report?\
@@ -369,7 +359,10 @@ fn http_client() -> reqwest::Client {
 }
 
 /// Check HTTP response status, returning a typed error for auth failures.
-async fn check_response(resp: reqwest::Response, auth_error_msg: &str) -> Result<reqwest::Response> {
+async fn check_response(
+    resp: reqwest::Response,
+    auth_error_msg: &str,
+) -> Result<reqwest::Response> {
     let status = resp.status().as_u16();
     if status == 401 || status == 403 {
         return Err(Error::Usage(auth_error_msg.to_string()));
@@ -382,7 +375,7 @@ async fn check_response(resp: reqwest::Response, auth_error_msg: &str) -> Result
 }
 
 /// Sort cost line items by cost descending.
-fn sort_by_cost_desc(items: &mut Vec<CostLineItem>) {
+fn sort_by_cost_desc(items: &mut [CostLineItem]) {
     items.sort_by(|a, b| {
         b.cost_cents
             .partial_cmp(&a.cost_cents)
@@ -391,10 +384,7 @@ fn sort_by_cost_desc(items: &mut Vec<CostLineItem>) {
 }
 
 /// Retrieve the admin key for a provider from KeyStore.
-fn get_admin_key(
-    store: &impl KeyStore,
-    provider: &str,
-) -> Result<zeroize::Zeroizing<String>> {
+fn get_admin_key(store: &impl KeyStore, provider: &str) -> Result<zeroize::Zeroizing<String>> {
     let key_name = format!("{}:admin", provider);
     match store.get(&key_name) {
         Ok((value, kind)) => {
@@ -436,6 +426,18 @@ mod tests {
         assert_eq!(format_cost(1350.0), "$13.50");
         assert_eq!(format_cost(42.0), "$0.42");
         assert_eq!(format_cost(10000.0), "$100.00");
+    }
+
+    #[test]
+    fn test_format_cost_non_finite() {
+        assert_eq!(format_cost(f64::NAN), "$-.--");
+        assert_eq!(format_cost(f64::INFINITY), "$-.--");
+        assert_eq!(format_cost(f64::NEG_INFINITY), "$-.--");
+    }
+
+    #[test]
+    fn test_format_cost_negative() {
+        assert_eq!(format_cost(-100.0), "$-1.00");
     }
 
     #[test]
@@ -519,7 +521,9 @@ mod tests {
     async fn test_fetch_cost_unknown_provider() {
         let store = MockStore::new();
         let cache = UsageCache::default();
-        let err = fetch_cost(&store, "unknown", &cache, false).await.unwrap_err();
+        let err = fetch_cost(&store, "unknown", &cache, false)
+            .await
+            .unwrap_err();
         assert!(matches!(err, Error::Usage(_)));
     }
 
@@ -527,7 +531,9 @@ mod tests {
     async fn test_fetch_cost_missing_admin_key() {
         let store = MockStore::new();
         let cache = UsageCache::default();
-        let err = fetch_cost(&store, "openai", &cache, false).await.unwrap_err();
+        let err = fetch_cost(&store, "openai", &cache, false)
+            .await
+            .unwrap_err();
         assert!(matches!(err, Error::AdminKeyRequired { .. }));
     }
 

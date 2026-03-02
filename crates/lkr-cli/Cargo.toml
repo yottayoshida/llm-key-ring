@@ -3,16 +3,21 @@ name = "lkr-cli"
 description = "CLI for LLM Key Ring — manage LLM API keys via macOS Keychain"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["llm", "api-key", "keychain", "secret", "cli"]
+categories = ["command-line-utilities", "authentication"]
 
 [[bin]]
 name = "lkr"
 path = "src/main.rs"
 
 [dependencies]
-lkr-core = { path = "../lkr-core" }
+lkr-core = { version = "0.1.0", path = "../lkr-core" }
 clap = { version = "4", features = ["derive"] }
 rpassword = "5"
 arboard = "3"

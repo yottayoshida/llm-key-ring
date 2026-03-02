@@ -28,7 +28,9 @@ pub enum Error {
     #[error("Usage API error: {0}")]
     Usage(String),
 
-    #[error("Admin key required for {provider} usage tracking. Run `lkr set {provider}:admin --kind admin` to register.")]
+    #[error(
+        "Admin key required for {provider} usage tracking. Run `lkr set {provider}:admin --kind admin` to register."
+    )]
     AdminKeyRequired { provider: String },
 
     #[error("HTTP {status}: {body}")]

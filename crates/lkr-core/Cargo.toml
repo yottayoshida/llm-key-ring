@@ -1,11 +1,20 @@
 [package]
 name = "lkr-core"
-description = "Core library for LLM Key Ring — KeyStore, TemplateGen, UsageTracker"
+description = "Core library for LLM Key Ring — secure LLM API key management via macOS Keychain"
 version.workspace = true
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 authors.workspace = true
 repository.workspace = true
+homepage.workspace = true
+readme = "../../README.md"
+keywords = ["llm", "api-key", "keychain", "secret", "security"]
+categories = ["command-line-utilities", "authentication"]
+
+[package.metadata.docs.rs]
+default-target = "x86_64-apple-darwin"
+targets = ["x86_64-apple-darwin", "aarch64-apple-darwin"]
 
 [dependencies]
 keyring = { workspace = true }

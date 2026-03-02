@@ -170,7 +170,9 @@ fn main() {
         } => cmd_get(&store, &name, show, plain, force_plain, cli.json),
         Commands::List { all } => cmd_list(&store, all, cli.json),
         Commands::Rm { name, force } => cmd_rm(&store, &name, force),
-        Commands::Usage { provider, refresh } => cmd_usage(&store, provider.as_deref(), refresh, cli.json),
+        Commands::Usage { provider, refresh } => {
+            cmd_usage(&store, provider.as_deref(), refresh, cli.json)
+        }
         Commands::Gen {
             template,
             output,
@@ -208,18 +210,21 @@ fn main() {
 }
 
 fn cmd_set(store: &impl KeyStore, name: &str, kind_str: &str, force: bool) -> lkr_core::Result<()> {
-    let kind: KeyKind = kind_str.parse().map_err(|reason| lkr_core::Error::InvalidKeyName {
-        name: name.to_string(),
-        reason,
-    })?;
+    let kind: KeyKind = kind_str
+        .parse()
+        .map_err(|reason| lkr_core::Error::InvalidKeyName {
+            name: name.to_string(),
+            reason,
+        })?;
 
     // Read value from prompt (not CLI args — prevents shell history exposure)
     // Wrapped in Zeroizing to zero memory on drop.
     eprint!("Enter API key for {}: ", name);
     io::stderr().flush().ok();
-    let value = Zeroizing::new(rpassword::read_password().map_err(|e| {
-        lkr_core::Error::Keychain(format!("Failed to read input: {}", e))
-    })?);
+    let value = Zeroizing::new(
+        rpassword::read_password()
+            .map_err(|e| lkr_core::Error::Keychain(format!("Failed to read input: {}", e)))?,
+    );
 
     store.set(name, value.trim(), kind, force)?;
 
@@ -322,10 +327,7 @@ fn cmd_list(store: &impl KeyStore, include_admin: bool, json: bool) -> lkr_core:
     }
 
     // Table output
-    println!(
-        "  {:<14} {:<20} {:<10} Value",
-        "Provider", "Name", "Kind"
-    );
+    println!("  {:<14} {:<20} {:<10} Value", "Provider", "Name", "Kind");
     println!("  {}", "-".repeat(60));
     for entry in &entries {
         println!(
@@ -418,7 +420,11 @@ fn cmd_usage(
 
     if reports.len() > 1 {
         let grand_total: f64 = reports.iter().map(|r| r.total_cost_cents).sum();
-        println!("\n  {:<32} {}", "Grand Total", lkr_core::format_cost(grand_total));
+        println!(
+            "\n  {:<32} {}",
+            "Grand Total",
+            lkr_core::format_cost(grand_total)
+        );
     }
 
     println!();
@@ -490,8 +496,16 @@ fn cmd_gen(
     let result = lkr_core::generate(store, template_path, &output_path)?;
 
     // Report
-    let resolved: Vec<_> = result.resolutions.iter().filter(|r| r.key_name.is_some()).collect();
-    let unresolved: Vec<_> = result.resolutions.iter().filter(|r| r.key_name.is_none()).collect();
+    let resolved: Vec<_> = result
+        .resolutions
+        .iter()
+        .filter(|r| r.key_name.is_some())
+        .collect();
+    let unresolved: Vec<_> = result
+        .resolutions
+        .iter()
+        .filter(|r| r.key_name.is_none())
+        .collect();
 
     if !resolved.is_empty() {
         eprintln!("  Resolved from Keychain:");
@@ -502,15 +516,14 @@ fn cmd_gen(
                 r.key_name.as_deref().unwrap_or("?")
             );
             if r.alternatives.len() > 1 {
-                let others: Vec<&str> = r.alternatives.iter()
+                let others: Vec<&str> = r
+                    .alternatives
+                    .iter()
                     .filter(|a| Some(a.as_str()) != r.key_name.as_deref())
                     .map(|a| a.as_str())
                     .collect();
                 if !others.is_empty() {
-                    eprintln!(
-                        "      (also available: {})",
-                        others.join(", ")
-                    );
+                    eprintln!("      (also available: {})", others.join(", "));
                 }
             }
         }
@@ -544,11 +557,7 @@ fn cmd_rm(store: &impl KeyStore, name: &str, force: bool) -> lkr_core::Result<()
     Ok(())
 }
 
-fn cmd_exec(
-    store: &impl KeyStore,
-    keys: &[String],
-    command: &[String],
-) -> lkr_core::Result<()> {
+fn cmd_exec(store: &impl KeyStore, keys: &[String], command: &[String]) -> lkr_core::Result<()> {
     if command.is_empty() {
         return Err(lkr_core::Error::Usage(
             "No command specified. Usage: lkr exec -- <command> [args...]".to_string(),
@@ -567,10 +576,16 @@ fn cmd_exec(
         }
         pairs
     } else {
-        // Specific keys requested
+        // Specific keys requested — admin keys are rejected (SECURITY.md T7)
         let mut pairs = Vec::new();
         for key_name in keys {
-            let (value, _kind) = store.get(key_name)?;
+            let (value, kind) = store.get(key_name)?;
+            if kind == KeyKind::Admin {
+                return Err(lkr_core::Error::Usage(format!(
+                    "admin key \"{}\" cannot be used with exec. Use runtime keys only.",
+                    key_name
+                )));
+            }
             pairs.push((lkr_core::key_to_env_var(key_name), value));
         }
         pairs
@@ -594,10 +609,98 @@ fn cmd_exec(
         child.env(env_var, &**value);
     }
 
-    let status = child
-        .status()
-        .map_err(|e| lkr_core::Error::Usage(format!("Failed to execute '{}': {}", command[0], e)))?;
+    let status = child.status().map_err(|e| {
+        lkr_core::Error::Usage(format!("Failed to execute '{}': {}", command[0], e))
+    })?;
 
     // Propagate child exit code
     std::process::exit(status.code().unwrap_or(1));
+}
+
+// ---------------------------------------------------------------------------
+// Tests
+// ---------------------------------------------------------------------------
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use lkr_core::keymanager::MockStore;
+
+    #[test]
+    fn test_cmd_exec_rejects_admin_key() {
+        let store = MockStore::new();
+        store
+            .set("openai:admin", "sk-admin-secret", KeyKind::Admin, false)
+            .unwrap();
+
+        let result = cmd_exec(
+            &store,
+            &["openai:admin".to_string()],
+            &["echo".to_string(), "hello".to_string()],
+        );
+
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("admin key"));
+        assert!(err_msg.contains("openai:admin"));
+    }
+
+    #[test]
+    fn test_cmd_exec_allows_runtime_key() {
+        let store = MockStore::new();
+        store
+            .set(
+                "openai:prod",
+                "sk-test-key",
+                lkr_core::KeyKind::Runtime,
+                false,
+            )
+            .unwrap();
+
+        // cmd_exec calls std::process::exit() on success — can't assert here.
+        // Admin-guard rejection is covered by test_cmd_exec_rejects_admin_key.
+    }
+
+    #[test]
+    fn test_cmd_exec_rejects_multiple_admin_keys() {
+        let store = MockStore::new();
+        store
+            .set("openai:admin", "sk-admin-1", KeyKind::Admin, false)
+            .unwrap();
+        store
+            .set("anthropic:admin", "sk-admin-2", KeyKind::Admin, false)
+            .unwrap();
+
+        // First admin key should be caught
+        let result = cmd_exec(
+            &store,
+            &["openai:admin".to_string(), "anthropic:admin".to_string()],
+            &["echo".to_string()],
+        );
+
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("admin key"));
+    }
+
+    #[test]
+    fn test_cmd_exec_rejects_mixed_runtime_admin() {
+        let store = MockStore::new();
+        store
+            .set("openai:prod", "sk-rt", KeyKind::Runtime, false)
+            .unwrap();
+        store
+            .set("anthropic:admin", "sk-adm", KeyKind::Admin, false)
+            .unwrap();
+
+        let result = cmd_exec(
+            &store,
+            &["openai:prod".to_string(), "anthropic:admin".to_string()],
+            &["echo".to_string()],
+        );
+
+        assert!(result.is_err());
+        let err_msg = format!("{}", result.unwrap_err());
+        assert!(err_msg.contains("anthropic:admin"));
+    }
 }
