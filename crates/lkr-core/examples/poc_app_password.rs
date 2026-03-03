@@ -66,6 +66,7 @@ unsafe extern "C" {
 unsafe extern "C" {}
 
 // setCredential:type: — (NSData*, int64) → BOOL
+#[allow(clashing_extern_declarations)]
 unsafe extern "C" {
     #[link_name = "objc_msgSend"]
     fn msg_set_credential(
@@ -204,11 +205,7 @@ unsafe fn store_item(ctx: *mut c_void, acl: *mut c_void) -> i32 {
 unsafe fn retrieve_item(ctx: Option<*mut c_void>) -> i32 {
     let q = new_dict();
     set_base_query(q);
-    CFDictionarySetValue(
-        q,
-        kSecReturnData,
-        CFBoolean::true_value().as_CFTypeRef(),
-    );
+    CFDictionarySetValue(q, kSecReturnData, CFBoolean::true_value().as_CFTypeRef());
     if let Some(c) = ctx {
         CFDictionarySetValue(q, kSecUseAuthenticationContext, c);
     }
@@ -236,8 +233,16 @@ unsafe fn store_plain() -> i32 {
     let q = new_dict();
     set_base_query(q);
     let data = CFData::from_buffer(SECRET.as_bytes());
-    CFDictionarySetValue(q, kSecValueData, data.as_concrete_TypeRef() as *const c_void);
-    CFDictionarySetValue(q, kSecAttrSynchronizable, CFBoolean::false_value().as_CFTypeRef());
+    CFDictionarySetValue(
+        q,
+        kSecValueData,
+        data.as_concrete_TypeRef() as *const c_void,
+    );
+    CFDictionarySetValue(
+        q,
+        kSecAttrSynchronizable,
+        CFBoolean::false_value().as_CFTypeRef(),
+    );
     let s = SecItemAdd(q as *const _, ptr::null_mut());
     CFRelease(q);
     s
@@ -249,8 +254,16 @@ unsafe fn store_acl_no_ctx(acl: *mut c_void) -> i32 {
     let q = new_dict();
     set_base_query(q);
     let data = CFData::from_buffer(SECRET.as_bytes());
-    CFDictionarySetValue(q, kSecValueData, data.as_concrete_TypeRef() as *const c_void);
-    CFDictionarySetValue(q, kSecAttrSynchronizable, CFBoolean::false_value().as_CFTypeRef());
+    CFDictionarySetValue(
+        q,
+        kSecValueData,
+        data.as_concrete_TypeRef() as *const c_void,
+    );
+    CFDictionarySetValue(
+        q,
+        kSecAttrSynchronizable,
+        CFBoolean::false_value().as_CFTypeRef(),
+    );
     CFDictionarySetValue(q, kSecAttrAccessControl, acl);
     // NOTE: deliberately omitting kSecUseAuthenticationContext
     let s = SecItemAdd(q as *const _, ptr::null_mut());
@@ -353,9 +366,18 @@ fn main() {
         println!("[B] ACL, no context: {} ({sb})", status_str(sb));
         println!("[C] ACL + context:   {} ({sc})", status_str(sc));
         if store_ok {
-            println!("[D] Correct pw:      {}", if ok_correct { "OK" } else { "FAIL" });
-            println!("    No context:      {}", if blocked_none { "BLOCKED" } else { "OPEN" });
-            println!("    Wrong pw:        {}", if blocked_wrong { "BLOCKED" } else { "OPEN" });
+            println!(
+                "[D] Correct pw:      {}",
+                if ok_correct { "OK" } else { "FAIL" }
+            );
+            println!(
+                "    No context:      {}",
+                if blocked_none { "BLOCKED" } else { "OPEN" }
+            );
+            println!(
+                "    Wrong pw:        {}",
+                if blocked_wrong { "BLOCKED" } else { "OPEN" }
+            );
         }
 
         println!();
@@ -363,7 +385,10 @@ fn main() {
             println!("VERDICT: FULL PASS — admin ACL proceeds (Step 2 GO)");
         } else if sa == 0 && sc != 0 {
             println!("VERDICT: FAIL — plain Keychain works but APPLICATION_PASSWORD fails");
-            println!("  Error {sc} ({}) suggests unsigned binary cannot use this ACL.", status_str(sc));
+            println!(
+                "  Error {sc} ({}) suggests unsigned binary cannot use this ACL.",
+                status_str(sc)
+            );
             println!("  → Step 2 (admin ACL) NO-GO for unsigned binary.");
             println!("  → Defer to v0.3.0 (signed distribution + Touch ID).");
         } else if partial {

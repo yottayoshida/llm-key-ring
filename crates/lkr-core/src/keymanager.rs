@@ -159,8 +159,8 @@ mod keychain_raw {
     use core_foundation::boolean::CFBoolean;
     use core_foundation::data::CFData;
     use security_framework_sys::item::{
-        kSecAttrService, kSecAttrSynchronizable, kSecAttrSynchronizableAny,
-        kSecClass, kSecClassGenericPassword, kSecReturnData, kSecValueData,
+        kSecAttrService, kSecAttrSynchronizable, kSecAttrSynchronizableAny, kSecClass,
+        kSecClassGenericPassword, kSecReturnData, kSecValueData,
     };
     use security_framework_sys::keychain_item::{SecItemAdd, SecItemCopyMatching, SecItemDelete};
 
@@ -261,7 +261,11 @@ mod keychain_raw {
                 CFBoolean::true_value().as_CFTypeRef(),
             );
             // v0.1.0 keys may lack synchronizable attr; search all
-            CFDictionarySetValue(dict, kSecAttrSynchronizable as _, kSecAttrSynchronizableAny as _);
+            CFDictionarySetValue(
+                dict,
+                kSecAttrSynchronizable as _,
+                kSecAttrSynchronizableAny as _,
+            );
 
             let mut result: *const c_void = ptr::null();
             let status = SecItemCopyMatching(dict as _, &mut result as *mut _ as *mut _);
@@ -325,7 +329,11 @@ mod keychain_raw {
         set_base(dict, service, account);
         unsafe {
             // v0.1.0 keys may lack synchronizable attr; match all
-            CFDictionarySetValue(dict, kSecAttrSynchronizable as _, kSecAttrSynchronizableAny as _);
+            CFDictionarySetValue(
+                dict,
+                kSecAttrSynchronizable as _,
+                kSecAttrSynchronizableAny as _,
+            );
 
             let status = SecItemDelete(dict as _);
             CFRelease(dict as _);
@@ -378,10 +386,20 @@ pub struct MigrateKeyResult {
 
 impl MigrateKeyResult {
     fn ok(entry: &KeyEntry) -> Self {
-        Self { name: entry.name.clone(), kind: entry.kind, success: true, error: None }
+        Self {
+            name: entry.name.clone(),
+            kind: entry.kind,
+            success: true,
+            error: None,
+        }
     }
     fn err(entry: &KeyEntry, e: &Error) -> Self {
-        Self { name: entry.name.clone(), kind: entry.kind, success: false, error: Some(e.to_string()) }
+        Self {
+            name: entry.name.clone(),
+            kind: entry.kind,
+            success: false,
+            error: Some(e.to_string()),
+        }
     }
 }
 
