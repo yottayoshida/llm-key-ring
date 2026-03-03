@@ -25,7 +25,7 @@ $ lkr gen .env.example -o .env       # Generate config from template
 |---------|---------------|
 | API keys sitting in `.env` files | Encrypted in macOS Keychain |
 | Keys leaked via shell history | Interactive prompt input (never CLI args) |
-| AI agents extracting keys via pipe | TTY guard blocks `--plain` in non-interactive environments |
+| AI agents extracting keys via pipe | TTY guard blocks ALL non-TTY `get` access (v0.2.0) |
 | Keys lingering in clipboard | Auto-clears after 30 seconds |
 | Keys lingering in process memory | `zeroize` wipes memory on drop |
 
@@ -56,9 +56,14 @@ Key names use `provider:label` format (e.g., `openai:prod`, `anthropic:main`).
 ```bash
 lkr get openai:prod            # Masked display + clipboard (30s auto-clear)
 lkr get openai:prod --show     # Show raw value in terminal
-lkr get openai:prod --json     # JSON output
+lkr get openai:prod --json     # JSON output (masked value; safe in non-TTY)
 lkr get openai:prod --plain    # Raw value only (blocked in non-interactive env)
+lkr get openai:prod --force-plain  # Raw value even in non-interactive (use with caution)
 ```
+
+> **v0.2.0**: In non-interactive environments (pipes, agent subprocesses), `lkr get` is blocked
+> by default. Use `--json` (masked values) or `--force-plain` (raw, at your risk) to override.
+> Prefer `lkr exec` for automation.
 
 ### List keys
 
@@ -74,13 +79,15 @@ lkr list --json         # JSON output
 lkr exec -- python script.py                # Inject all runtime keys
 lkr exec -k openai:prod -- curl ...         # Inject specific keys only
 lkr exec -k openai:prod -k anthropic:main -- node app.js
+lkr exec --verbose -- python script.py      # Show injected env var names
 ```
 
 Keys are mapped to conventional env var names (e.g., `openai:prod` → `OPENAI_API_KEY`) and injected into the child process. Only `runtime` keys are injected — `admin` keys are excluded by design. **Keys never appear in stdout, files, or clipboard** — this is the safest way to pass secrets to programs. Prefer `exec` over `gen` whenever possible.
 
 ### Generate config from template
 
-Use `gen` when the target program requires a config file and cannot accept env vars:
+Use `gen` when the target program requires a config file and cannot accept env vars.
+In non-interactive environments, `--force` is required (v0.2.0):
 
 ```bash
 lkr gen .env.example              # → .env (auto-derived output path)
@@ -107,6 +114,16 @@ ANTHROPIC_API_KEY=              # ← resolved from anthropic:*
 Generated files are written with `0600` permissions. A warning is shown if the output file is not in `.gitignore`.
 
 When multiple runtime keys exist for the same provider (e.g., `openai:prod` and `openai:stg`), the alphabetically first key is used. A warning lists alternatives. Use `{{lkr:provider:label}}` placeholders for explicit control.
+
+### Migrate keys (v0.1.x → v0.2.0)
+
+```bash
+lkr migrate --dry-run   # Preview what would change
+lkr migrate             # Apply: adds sync protection + lock protection
+```
+
+Adds `kSecAttrSynchronizable: false` (no iCloud sync) and `kSecAttrAccessibleWhenUnlocked`
+(locked device blocks access) to all existing keys. Safe to run multiple times (idempotent).
 
 ### Delete a key
 
@@ -167,32 +184,32 @@ See [docs/SECURITY.md](docs/SECURITY.md) for the full threat model. Key protecti
 | Shell history exposure | `lkr set` reads from prompt, never from CLI arguments |
 | Clipboard residual | 30s auto-clear via SHA-256 hash comparison |
 | Terminal shoulder-surfing | Masked by default (`sk-p...3xYz`) |
-| **AI agent exfiltration** | **TTY guard (`isatty`) blocks `--plain`/`--show` in non-interactive environments** |
+| **AI agent exfiltration** | **TTY guard blocks ALL non-TTY `get`/`gen` access (v0.2.0)** |
 | Memory forensics | `zeroize::Zeroizing<String>` zeroes memory on drop |
 | Admin key in templates | `lkr gen` only resolves `runtime` keys |
 | Accidental git commit | `.gitignore` coverage check on generated files |
 
-### Agent IDE Attack Protection
+### Agent IDE Attack Protection (v0.2.0)
 
-AI coding assistants (Cursor, Copilot, etc.) can be tricked via prompt injection into running commands that exfiltrate secrets. `lkr` defends against this with three layers:
-
-**What TTY guard protects against**: non-interactive exfiltration — agents piping `--plain`/`--show` output or reading clipboard via `pbpaste`.
-
-**What it does NOT protect against**: a user being socially engineered into running `--show` in their own terminal. Use `lkr exec` as the default workflow to minimize this surface.
+AI coding assistants (Cursor, Copilot, Claude Code, etc.) can be tricked via prompt injection
+into running commands that exfiltrate secrets. `lkr` v0.2.0 comprehensively blocks this:
 
 ```bash
-# Layer 1: --plain/--show blocked in pipes (exit code 2)
-echo | lkr get openai:prod --plain
-# Error: --plain and --show are blocked in non-interactive environments.
+# Non-TTY: ALL get access blocked by default (exit code 2)
+echo | lkr get openai:prod          # ← Blocked
+echo | lkr get openai:prod --show   # ← Blocked
+echo | lkr get openai:prod --plain  # ← Blocked
 
-# Layer 2: Clipboard copy skipped in non-interactive environments
-echo | lkr get openai:prod
-# "Clipboard copy skipped (non-interactive environment)."
-# → prevents `lkr get key && pbpaste` bypass
+# Allowed alternatives in non-TTY:
+echo | lkr get openai:prod --json        # ← Pass (masked value only)
+echo | lkr get openai:prod --force-plain # ← Pass (explicit override)
 
-# Layer 3: Safe alternatives for automation
-lkr exec -- python script.py   # Recommended: keys in env vars only (never stdout/file/clipboard)
-lkr gen .env.example -o .env   # Fallback: keys to file (0600), never stdout
+# gen is also blocked in non-TTY:
+echo | lkr gen .env.example              # ← Blocked
+echo | lkr gen .env.example --force      # ← Pass (explicit override)
+
+# exec always works (safest path — keys never in stdout):
+lkr exec -- python script.py
 ```
 
 ## Architecture
@@ -201,7 +218,7 @@ lkr gen .env.example -o .env   # Fallback: keys to file (0600), never stdout
 llm-key-ring/
 ├── crates/
 │   ├── lkr-core/     # Library: KeyStore trait, Keychain, templates, usage API
-│   └── lkr-cli/      # Binary: clap CLI (set/get/list/rm/gen/usage/exec)
+│   └── lkr-cli/      # Binary: clap CLI (set/get/list/rm/gen/usage/exec/migrate)
 ├── docs/
 │   └── SECURITY.md   # Threat model
 ├── LICENSE-MIT
@@ -212,7 +229,7 @@ All business logic lives in `lkr-core`. The CLI is a thin wrapper.
 
 ### Platform Support
 
-Currently macOS only (uses native Keychain via `security-framework`). The `KeyStore` trait abstraction is designed for future backend support (Linux `libsecret`, Windows Credential Manager).
+Currently macOS only (uses native Keychain via `security-framework` / `security-framework-sys` direct FFI). The `KeyStore` trait abstraction is designed for future backend support (Linux `libsecret`, Windows Credential Manager).
 
 ### Keychain Storage
 
@@ -221,6 +238,57 @@ Currently macOS only (uses native Keychain via `security-framework`). The `KeySt
 | Service | `com.llm-key-ring` |
 | Account | `{provider}:{label}` |
 | Password | `{"value":"sk-...","kind":"runtime"}` |
+| Synchronizable | `false` (v0.2.0+, no iCloud sync) |
+| Accessible | `WhenUnlocked` (v0.2.0+) |
+
+## Upgrading from v0.1.x
+
+### Breaking changes in v0.2.0
+
+1. **`lkr get` is blocked in non-interactive environments** (exit code 2).
+   - Previously only `--plain`/`--show` were blocked; now bare `get` is also blocked.
+   - Use `--json` (masked values) or `--force-plain` (raw) to override.
+   - Recommended: switch to `lkr exec` for automation.
+
+2. **`lkr gen` is blocked in non-interactive environments** (exit code 2).
+   - Add `--force` to CI/CD scripts that use `lkr gen`.
+
+3. **`lkr exec` stderr output changed**:
+   - TTY: silent by default (was verbose). Use `--verbose` to see injected keys.
+   - Non-TTY: 1-line warning.
+
+### Migration steps
+
+```bash
+# 1. Update lkr
+cargo install --path crates/lkr-cli --force
+
+# 2. Migrate existing keys (adds iCloud sync protection + lock protection)
+lkr migrate --dry-run    # Preview
+lkr migrate              # Apply
+
+# 3. Update CI/CD scripts (if applicable)
+# Before: lkr get openai:prod --plain | ...
+# After:  lkr exec -- ...
+# Or:     lkr get openai:prod --force-plain | ...
+# Or:     lkr gen .env.example --force
+```
+
+## Exit Codes
+
+| Code | Meaning |
+|------|---------|
+| 0 | Success |
+| 1 | General error (key not found, Keychain error, etc.) |
+| 2 | TTY guard violation (non-interactive environment blocked) |
+
+## Roadmap
+
+| Version | Theme | Key Changes |
+|---------|-------|-------------|
+| **v0.2.0** (current) | Security Hardening | Keychain attribute hardening, comprehensive TTY guard, `lkr migrate` |
+| **v0.3.0** | DX + Signed Distribution | `lkr init` (.env import), shell completions, Homebrew, Touch ID ACL |
+| v0.4.0 | MCP Server | IDE integration for secure key access |
 
 ## Development
 

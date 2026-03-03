@@ -2,10 +2,12 @@ use crate::SERVICE_NAME;
 use crate::error::{Error, Result};
 use core_foundation::base::TCFType;
 use core_foundation::string::CFString;
-use security_framework::item::{ItemClass, ItemSearchOptions, Limit, SearchResult};
+use security_framework::item::{CloudSync, ItemClass, ItemSearchOptions, Limit, SearchResult};
 use security_framework_sys::item::kSecAttrAccount;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
+use std::ffi::c_void;
+use std::ptr;
 use std::sync::Mutex;
 use zeroize::{Zeroize, Zeroizing};
 
@@ -143,6 +145,200 @@ pub trait KeyStore {
 }
 
 // ---------------------------------------------------------------------------
+// Keychain raw operations — direct security-framework-sys FFI
+// ---------------------------------------------------------------------------
+//
+// v0.2.0: Replaces `keyring` crate with direct Security.framework calls.
+// All new items stored with:
+//   - kSecAttrSynchronizable: false  (no iCloud Keychain sync)
+//   - kSecAttrAccessibleWhenUnlocked (locked device blocks access)
+// All searches use kSecAttrSynchronizableAny for v0.1.0 backward compat.
+
+mod keychain_raw {
+    use super::*;
+    use core_foundation::boolean::CFBoolean;
+    use core_foundation::data::CFData;
+    use security_framework_sys::item::{
+        kSecAttrService, kSecAttrSynchronizable, kSecAttrSynchronizableAny,
+        kSecClass, kSecClassGenericPassword, kSecReturnData, kSecValueData,
+    };
+    use security_framework_sys::keychain_item::{SecItemAdd, SecItemCopyMatching, SecItemDelete};
+
+    // CFDictionary raw operations — not exposed at the level we need by core_foundation
+    #[link(name = "CoreFoundation", kind = "framework")]
+    unsafe extern "C" {
+        fn CFDictionaryCreateMutable(
+            allocator: *const c_void,
+            capacity: isize,
+            key_cb: *const c_void,
+            val_cb: *const c_void,
+        ) -> *mut c_void;
+        fn CFDictionarySetValue(dict: *mut c_void, key: *const c_void, val: *const c_void);
+        fn CFRelease(cf: *const c_void);
+        static kCFTypeDictionaryKeyCallBacks: c_void;
+        static kCFTypeDictionaryValueCallBacks: c_void;
+    }
+
+    // Accessibility constants from Security.framework.
+    // kSecAttrAccessible (key) may not be in security-framework-sys, so declare directly.
+    #[link(name = "Security", kind = "framework")]
+    unsafe extern "C" {
+        static kSecAttrAccessible: *const c_void;
+        static kSecAttrAccessibleWhenUnlocked: *const c_void;
+    }
+
+    fn new_dict() -> *mut c_void {
+        unsafe {
+            CFDictionaryCreateMutable(
+                ptr::null(),
+                0,
+                &kCFTypeDictionaryKeyCallBacks as *const c_void,
+                &kCFTypeDictionaryValueCallBacks as *const c_void,
+            )
+        }
+    }
+
+    /// Set common query fields: class=GenericPassword + service + account.
+    /// CFDictionarySetValue retains keys/values, so locals can go out of scope.
+    fn set_base(dict: *mut c_void, service: &str, account: &str) {
+        let svc = CFString::new(service);
+        let acct = CFString::new(account);
+        unsafe {
+            CFDictionarySetValue(dict, kSecClass as _, kSecClassGenericPassword as _);
+            CFDictionarySetValue(dict, kSecAttrService as _, svc.as_concrete_TypeRef() as _);
+            CFDictionarySetValue(dict, kSecAttrAccount as _, acct.as_concrete_TypeRef() as _);
+        }
+    }
+
+    fn os_status_to_error(status: i32, account: &str) -> Error {
+        match status {
+            -25300 => Error::KeyNotFound {
+                name: account.to_string(),
+            },
+            -25299 => Error::KeyAlreadyExists {
+                name: account.to_string(),
+            },
+            -25293 | -25308 => Error::KeychainLocked,
+            _ => Error::Keychain(format!("Keychain error: OSStatus {status}")),
+        }
+    }
+
+    /// Store a password in Keychain with v0.2.0 hardened attributes.
+    pub(super) fn set(service: &str, account: &str, password: &[u8]) -> Result<()> {
+        let dict = new_dict();
+        set_base(dict, service, account);
+        let data = CFData::from_buffer(password);
+        unsafe {
+            CFDictionarySetValue(dict, kSecValueData as _, data.as_concrete_TypeRef() as _);
+            // v0.2.0: Disable iCloud Keychain sync
+            CFDictionarySetValue(
+                dict,
+                kSecAttrSynchronizable as _,
+                CFBoolean::false_value().as_CFTypeRef(),
+            );
+            // v0.2.0: Only accessible when device is unlocked
+            CFDictionarySetValue(dict, kSecAttrAccessible, kSecAttrAccessibleWhenUnlocked);
+
+            let status = SecItemAdd(dict as _, ptr::null_mut());
+            CFRelease(dict as _);
+
+            if status != 0 {
+                return Err(os_status_to_error(status, account));
+            }
+        }
+        Ok(())
+    }
+
+    /// Retrieve password bytes from Keychain.
+    /// Uses kSecAttrSynchronizableAny for v0.1.0 backward compatibility.
+    pub(super) fn get(service: &str, account: &str) -> Result<Vec<u8>> {
+        let dict = new_dict();
+        set_base(dict, service, account);
+        unsafe {
+            CFDictionarySetValue(
+                dict,
+                kSecReturnData as _,
+                CFBoolean::true_value().as_CFTypeRef(),
+            );
+            // v0.1.0 keys may lack synchronizable attr; search all
+            CFDictionarySetValue(dict, kSecAttrSynchronizable as _, kSecAttrSynchronizableAny as _);
+
+            let mut result: *const c_void = ptr::null();
+            let status = SecItemCopyMatching(dict as _, &mut result as *mut _ as *mut _);
+            CFRelease(dict as _);
+
+            if status != 0 {
+                return Err(os_status_to_error(status, account));
+            }
+
+            if result.is_null() {
+                return Err(Error::Keychain(
+                    "SecItemCopyMatching returned null".to_string(),
+                ));
+            }
+
+            let cf_data = CFData::wrap_under_create_rule(result as _);
+            Ok(cf_data.bytes().to_vec())
+        }
+    }
+
+    /// Update attributes on an existing Keychain item.
+    /// Used by `lkr migrate` to add v0.2.0 hardened attributes to v0.1.0 keys.
+    pub(super) fn update_attributes(service: &str, account: &str) -> Result<()> {
+        use security_framework_sys::keychain_item::SecItemUpdate;
+
+        let query = new_dict();
+        set_base(query, service, account);
+        let attrs = new_dict();
+
+        unsafe {
+            // Query: find item (SynchronizableAny for v0.1.0 compat)
+            CFDictionarySetValue(
+                query,
+                kSecAttrSynchronizable as _,
+                kSecAttrSynchronizableAny as _,
+            );
+
+            // Attributes to update
+            CFDictionarySetValue(
+                attrs,
+                kSecAttrSynchronizable as _,
+                CFBoolean::false_value().as_CFTypeRef(),
+            );
+            CFDictionarySetValue(attrs, kSecAttrAccessible, kSecAttrAccessibleWhenUnlocked);
+
+            let status = SecItemUpdate(query as _, attrs as _);
+            CFRelease(query as _);
+            CFRelease(attrs as _);
+
+            if status != 0 {
+                return Err(os_status_to_error(status, account));
+            }
+        }
+        Ok(())
+    }
+
+    /// Delete a key from Keychain.
+    /// Uses kSecAttrSynchronizableAny for v0.1.0 backward compatibility.
+    pub(super) fn delete(service: &str, account: &str) -> Result<()> {
+        let dict = new_dict();
+        set_base(dict, service, account);
+        unsafe {
+            // v0.1.0 keys may lack synchronizable attr; match all
+            CFDictionarySetValue(dict, kSecAttrSynchronizable as _, kSecAttrSynchronizableAny as _);
+
+            let status = SecItemDelete(dict as _);
+            CFRelease(dict as _);
+
+            if status != 0 {
+                return Err(os_status_to_error(status, account));
+            }
+        }
+        Ok(())
+    }
+}
+
+// ---------------------------------------------------------------------------
 // KeychainStore — production implementation using macOS Keychain
 // ---------------------------------------------------------------------------
 
@@ -157,10 +353,6 @@ impl KeychainStore {
         }
     }
 
-    fn entry(&self, name: &str) -> std::result::Result<keyring::Entry, Error> {
-        keyring::Entry::new(&self.service, name).map_err(|e| Error::Keychain(e.to_string()))
-    }
-
     /// Extract the account name (kSecAttrAccount) from a CFDictionary.
     /// Returns None if the attribute is missing or not a valid string.
     fn extract_account(dict: &core_foundation::dictionary::CFDictionary) -> Option<String> {
@@ -168,6 +360,75 @@ impl KeychainStore {
         let account_ref = dict.find(account_key.as_CFTypeRef())?;
         let account = unsafe { CFString::wrap_under_get_rule(*account_ref as _) }.to_string();
         Some(account)
+    }
+}
+
+/// Result of migrating a single key.
+#[derive(Debug)]
+pub struct MigrateKeyResult {
+    /// Key name (e.g. "openai:prod")
+    pub name: String,
+    /// Key kind
+    pub kind: KeyKind,
+    /// Whether the migration succeeded
+    pub success: bool,
+    /// Error message if failed
+    pub error: Option<String>,
+}
+
+impl MigrateKeyResult {
+    fn ok(entry: &KeyEntry) -> Self {
+        Self { name: entry.name.clone(), kind: entry.kind, success: true, error: None }
+    }
+    fn err(entry: &KeyEntry, e: &Error) -> Self {
+        Self { name: entry.name.clone(), kind: entry.kind, success: false, error: Some(e.to_string()) }
+    }
+}
+
+/// Summary of a migrate operation.
+#[derive(Debug)]
+pub struct MigrateResult {
+    /// Per-key results
+    pub keys: Vec<MigrateKeyResult>,
+}
+
+impl MigrateResult {
+    pub fn migrated_count(&self) -> usize {
+        self.keys.iter().filter(|k| k.success).count()
+    }
+
+    pub fn failed_count(&self) -> usize {
+        self.keys.iter().filter(|k| !k.success).count()
+    }
+}
+
+impl KeychainStore {
+    /// Migrate v0.1.0 keys to v0.2.0 attributes.
+    ///
+    /// Adds `kSecAttrSynchronizable: false` and `kSecAttrAccessibleWhenUnlocked`
+    /// to all keys stored under the service name. Idempotent — safe to run
+    /// multiple times.
+    ///
+    /// When `dry_run` is true, returns what *would* be migrated without changes.
+    pub fn migrate(&self, dry_run: bool) -> Result<MigrateResult> {
+        // List ALL keys (including admin)
+        let entries = self.list(true)?;
+
+        let mut results = Vec::new();
+
+        for entry in &entries {
+            if dry_run {
+                results.push(MigrateKeyResult::ok(entry));
+                continue;
+            }
+
+            match keychain_raw::update_attributes(&self.service, &entry.name) {
+                Ok(()) => results.push(MigrateKeyResult::ok(entry)),
+                Err(e) => results.push(MigrateKeyResult::err(entry, &e)),
+            }
+        }
+
+        Ok(MigrateResult { keys: results })
     }
 }
 
@@ -184,10 +445,16 @@ impl KeyStore for KeychainStore {
             return Err(Error::EmptyValue);
         }
 
-        if !force && self.exists(name)? {
+        let exists = self.exists(name)?;
+        if !force && exists {
             return Err(Error::KeyAlreadyExists {
                 name: name.to_string(),
             });
+        }
+
+        // force=true: delete existing before re-adding with new attributes
+        if exists {
+            keychain_raw::delete(&self.service, name)?;
         }
 
         let mut stored = StoredEntry {
@@ -202,11 +469,7 @@ impl KeyStore for KeychainStore {
         // Zeroize the intermediate copy now that it's been serialized
         stored.value.zeroize();
 
-        let entry = self.entry(name)?;
-        entry.set_password(&json).map_err(|e| match e {
-            keyring::Error::PlatformFailure(_) => Error::KeychainLocked,
-            _ => Error::Keychain(e.to_string()),
-        })?;
+        keychain_raw::set(&self.service, name, json.as_bytes())?;
 
         // json (Zeroizing<String>) is zeroized on drop here
         Ok(())
@@ -214,14 +477,11 @@ impl KeyStore for KeychainStore {
 
     fn get(&self, name: &str) -> Result<(Zeroizing<String>, KeyKind)> {
         validate_name(name)?;
-        let entry = self.entry(name)?;
-        let json = Zeroizing::new(entry.get_password().map_err(|e| match e {
-            keyring::Error::NoEntry => Error::KeyNotFound {
-                name: name.to_string(),
-            },
-            keyring::Error::PlatformFailure(_) => Error::KeychainLocked,
-            _ => Error::Keychain(e.to_string()),
-        })?);
+        let bytes = keychain_raw::get(&self.service, name)?;
+        let json = Zeroizing::new(
+            String::from_utf8(bytes)
+                .map_err(|e| Error::Keychain(format!("Invalid UTF-8 in Keychain: {}", e)))?,
+        );
 
         let stored: StoredEntry = serde_json::from_str(&json)
             .map_err(|e| Error::Keychain(format!("Failed to deserialize: {}", e)))?;
@@ -231,22 +491,17 @@ impl KeyStore for KeychainStore {
 
     fn delete(&self, name: &str) -> Result<()> {
         validate_name(name)?;
-        let entry = self.entry(name)?;
-        entry.delete_credential().map_err(|e| match e {
-            keyring::Error::NoEntry => Error::KeyNotFound {
-                name: name.to_string(),
-            },
-            keyring::Error::PlatformFailure(_) => Error::KeychainLocked,
-            _ => Error::Keychain(e.to_string()),
-        })?;
-        Ok(())
+        keychain_raw::delete(&self.service, name)
     }
 
     fn list(&self, include_admin: bool) -> Result<Vec<KeyEntry>> {
         // Step 1: Enumerate account names via security-framework
+        // CloudSync::MatchSyncAny ensures both v0.1.0 keys (no sync attr)
+        // and v0.2.0 keys (sync=false) are found.
         let results = ItemSearchOptions::new()
             .class(ItemClass::generic_password())
             .service(&self.service)
+            .cloud_sync(CloudSync::MatchSyncAny)
             .load_attributes(true)
             .limit(Limit::All)
             .search();
@@ -257,7 +512,7 @@ impl KeyStore for KeychainStore {
             Err(e) => return Err(Error::Keychain(format!("Keychain search failed: {}", e))),
         };
 
-        // Step 2: For each account, read full data via keyring crate
+        // Step 2: For each account, read full data via direct Keychain API
         let mut entries = Vec::new();
         for result in results {
             if let SearchResult::Dict(dict) = result

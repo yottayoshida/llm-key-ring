@@ -17,7 +17,6 @@ default-target = "x86_64-apple-darwin"
 targets = ["x86_64-apple-darwin", "aarch64-apple-darwin"]
 
 [dependencies]
-keyring = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 thiserror = { workspace = true }

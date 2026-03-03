@@ -35,4 +35,7 @@ pub enum Error {
 
     #[error("HTTP {status}: {body}")]
     HttpError { status: u16, body: String },
+
+    #[error("{message}")]
+    TtyGuard { message: String },
 }

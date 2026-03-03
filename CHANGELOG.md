@@ -5,6 +5,40 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-03-03
+
+Security hardening release. Keychain attribute hardening + comprehensive TTY guard.
+
+### Added
+
+- `lkr migrate` — Migrate v0.1.0 keys to v0.2.0 format (adds iCloud sync protection + lock protection)
+- `lkr migrate --dry-run` — Preview migration without applying changes
+- `lkr exec --verbose` — Show injected env var names on stderr
+- Keychain attributes on all new keys: `kSecAttrSynchronizable: false` + `kSecAttrAccessibleWhenUnlocked`
+- `TtyGuard` error type with exit code 2 for non-interactive environment blocks
+- 9 new tests for TTY guard matrix (7 for `get`, 2 for `gen`)
+- `docs/SECURITY.md`: Attack surface comparison table (.env vs LKR), FFI memory gap documentation, v0.3.0 roadmap
+- `README.md`: Upgrading from v0.1.x guide, exit code table, roadmap
+
+### Changed
+
+- **BREAKING**: `lkr get` is now blocked in non-interactive environments by default (exit code 2). Previously only `--plain`/`--show` were blocked. Use `--json` (masked values) or `--force-plain` to override.
+- **BREAKING**: `lkr gen` is now blocked in non-interactive environments by default (exit code 2). Use `--force` to override.
+- **BREAKING**: `lkr exec` stderr output is now silent by default in TTY mode. Use `--verbose` to see injected key names. Non-TTY mode emits a 1-line warning.
+- Replaced `keyring` crate with direct `security-framework-sys` FFI calls for full Keychain attribute control
+- All Keychain searches use `kSecAttrSynchronizableAny` for backward compatibility with v0.1.0 keys
+
+### Removed
+
+- `keyring` crate dependency (replaced by direct `security-framework-sys` FFI)
+
+### Security
+
+- iCloud Keychain sync disabled (`kSecAttrSynchronizable: false`) on all keys
+- Locked device access blocked (`kSecAttrAccessibleWhenUnlocked`) on all keys
+- Comprehensive TTY guard: `get` (all modes), `gen`, `exec` now covered
+- `SECURITY.md` rewritten with honest threat model, attack surface comparison, and known limitations
+
 ## [0.1.0] - 2026-03-02
 
 Initial release. Secure CLI for managing LLM API keys via macOS Keychain.
