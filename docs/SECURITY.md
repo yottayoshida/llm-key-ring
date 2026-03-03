@@ -15,7 +15,7 @@ and the design decisions behind each mitigation.
 | `grep -r API_KEY .` in project | Exposed | N/A | N/A | No files to grep |
 | Git commit of secrets | Exposed | N/A | N/A | Nothing to commit |
 | `security find-generic-password` (runtime) | N/A | Exposed | Exposed | Requires login Keychain access |
-| `security find-generic-password` (admin) | N/A | Exposed | Exposed | APPLICATION_PASSWORD deferred to v0.3.0 |
+| `security find-generic-password` (admin) | N/A | Exposed | Exposed | ACL requires Apple Developer ID signing (see below) |
 | Shell history exposure | Exposed (if `export KEY=...`) | Protected | Protected | `lkr set` uses hidden prompt |
 | AI agent pipe exfiltration | Exposed (`cat .env`) | Partial | **Protected** | v0.2.0 blocks all non-TTY `get` access |
 | iCloud Keychain sync to other devices | N/A | **Unprotected** | **Protected** | `kSecAttrSynchronizable: false` |
@@ -25,7 +25,7 @@ and the design decisions behind each mitigation.
 **Summary**: LKR v0.2.0 eliminates 3 of the 4 most common attack vectors (plaintext files,
 git commits, shell history) and adds protection against iCloud sync, locked-device access,
 and comprehensive AI agent exfiltration. The remaining gap (`security find-generic-password`)
-requires code signing, planned for v0.3.0.
+requires Apple Developer ID code signing — see "Keychain ACL Investigation" below.
 
 ## Threat Overview
 
@@ -110,13 +110,33 @@ These are **known limitations** — users should be aware:
 
 | Scenario | Why it's a limitation | Mitigation / Roadmap |
 |----------|----------------------|---------------------|
-| `security find-generic-password` reads runtime keys | Unsigned binary cannot set Keychain ACL (Touch ID requires code signing + entitlements) | **v0.3.0**: Signed binary + Touch ID ACL |
+| `security find-generic-password` reads runtime keys | Unsigned binary cannot set Keychain ACL (requires Apple Developer ID — see investigation below) | **Known limitation**: Use `lkr exec` instead of direct key retrieval |
 | Root/admin access to the machine | macOS Keychain is unlocked when the user is logged in | Use FileVault; lock screen when away |
 | Agent reads generated `.env` file via `cat` | File exists on disk after `lkr gen` | Use `lkr exec` instead; delete generated files after use |
 | IDE with pseudo-TTY (pty) bypasses TTY guard | Some IDEs allocate a pty; `isatty` returns true | TTY guard is defense-in-depth; use `lkr exec` as primary |
 | Child process logs env vars after `lkr exec` | LKR has no control over child behavior | Audit child programs; avoid untrusted commands |
 | Clipboard manager capturing copied keys | Third-party clipboard managers may persist history | 30s auto-clear mitigates; disable clipboard managers for sensitive use |
-| Unsigned binary path replacement | Attacker replaces `lkr` binary; Keychain allows access to same-service items | **v0.3.0**: Code signing verifies binary integrity |
+| Unsigned binary path replacement | Attacker replaces `lkr` binary; Keychain allows access to same-service items | **Known limitation**: Verify binary integrity manually (`sha256sum`) |
+
+### Keychain ACL Investigation (v0.2.1)
+
+macOS Keychain ACL (`SecAccessControlCreateWithFlags`) could block `security find-generic-password`
+from reading keys without biometric authentication. However, ACL requires code signing with a
+valid Team ID from the Apple Developer Program ($99/year).
+
+We tested three signing approaches — all failed:
+
+| Signing Method | Result | Error |
+|---------------|--------|-------|
+| Ad-hoc (`codesign -s -`) | Failed | `errSecMissingEntitlement (-34018)` |
+| Self-signed certificate (no entitlements) | Failed | `errSecMissingEntitlement (-34018)` |
+| Self-signed certificate + `keychain-access-groups` entitlement | Failed | Process killed by `amfid` |
+
+**Conclusion**: Keychain ACL is only available to binaries signed with an Apple Developer ID
+(requires Apple Developer Program, $99/year). Binaries installed via `cargo install` or
+Homebrew source-build cannot use ACL. This is a **permanent known limitation** of the
+unsigned distribution model. The `security find-generic-password` attack vector remains
+open — mitigated by `lkr exec` (keys never in stdout) and defense-in-depth layers above.
 
 ### FFI Memory Gap
 
@@ -163,7 +183,7 @@ enabling kind-based access control without separate metadata storage.
 | Version | Security Focus |
 |---------|---------------|
 | **v0.2.0** (current) | Keychain attribute hardening + comprehensive TTY guard |
-| **v0.3.0** | Signed binary (Homebrew) + Touch ID ACL for all keys |
+| **v0.3.0** | DX improvement (`lkr init`, shell completions, Homebrew tap) |
 | v0.4.0 | MCP server with scoped access tokens |
 
 ## Reporting Security Issues

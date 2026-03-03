@@ -5,6 +5,17 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-03-03
+
+Documentation-only patch. Updated threat model with Keychain ACL investigation results.
+
+### Changed
+
+- `docs/SECURITY.md`: Added "Keychain ACL Investigation" section documenting spike results (3 signing approaches tested, all failed without Apple Developer ID)
+- `docs/SECURITY.md`: ACL-related items moved from "planned" to "known limitation" — Apple Developer Program ($99/year) required, not planned
+- `docs/SECURITY.md`: Updated roadmap (removed Touch ID ACL from future versions)
+- `README.md`: Updated roadmap — v0.3.0 is DX Improvement, v0.4.0 is MCP Server
+
 ## [0.2.0] - 2026-03-03
 
 Security hardening release. Keychain attribute hardening + comprehensive TTY guard.
@@ -67,4 +78,6 @@ Initial release. Secure CLI for managing LLM API keys via macOS Keychain.
 - Generated files written with `0600` permissions
 - `.gitignore` coverage check on generated files
 
+[0.2.1]: https://github.com/yottayoshida/llm-key-ring/compare/v0.2.0...v0.2.1
+[0.2.0]: https://github.com/yottayoshida/llm-key-ring/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/yottayoshida/llm-key-ring/releases/tag/v0.1.0

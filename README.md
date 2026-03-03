@@ -287,7 +287,7 @@ lkr migrate              # Apply
 | Version | Theme | Key Changes |
 |---------|-------|-------------|
 | **v0.2.0** (current) | Security Hardening | Keychain attribute hardening, comprehensive TTY guard, `lkr migrate` |
-| **v0.3.0** | DX + Signed Distribution | `lkr init` (.env import), shell completions, Homebrew, Touch ID ACL |
+| **v0.3.0** | DX Improvement | `lkr init` (.env import), shell completions, Homebrew tap |
 | v0.4.0 | MCP Server | IDE integration for secure key access |
 
 ## Development
