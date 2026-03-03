@@ -182,7 +182,15 @@ fn main() {
             show,
             plain,
             force_plain,
-        } => cmd_get(&store, &name, show, plain, force_plain, cli.json, stdout_is_tty),
+        } => cmd_get(
+            &store,
+            &name,
+            show,
+            plain,
+            force_plain,
+            cli.json,
+            stdout_is_tty,
+        ),
         Commands::List { all } => cmd_list(&store, all, cli.json),
         Commands::Rm { name, force } => cmd_rm(&store, &name, force),
         Commands::Usage { provider, refresh } => {
@@ -703,8 +711,13 @@ fn cmd_exec(
     if entries.is_empty() {
         eprintln!("Warning: no keys matched. Running command without injected env vars.");
     } else if !stdout_is_tty {
-        eprintln!("Warning: injecting {} key(s) in non-interactive environment.", entries.len());
-        if verbose { print_env_vars(); }
+        eprintln!(
+            "Warning: injecting {} key(s) in non-interactive environment.",
+            entries.len()
+        );
+        if verbose {
+            print_env_vars();
+        }
     } else if verbose {
         eprintln!("Injecting {} key(s) as env vars:", entries.len());
         print_env_vars();
@@ -741,7 +754,12 @@ mod tests {
     fn setup_store_with_key() -> MockStore {
         let store = MockStore::new();
         store
-            .set("openai:prod", "sk-test-key-12345678", KeyKind::Runtime, false)
+            .set(
+                "openai:prod",
+                "sk-test-key-12345678",
+                KeyKind::Runtime,
+                false,
+            )
             .unwrap();
         store
     }
