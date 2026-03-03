@@ -95,6 +95,13 @@ enum Commands {
         force: bool,
     },
 
+    /// Migrate v0.1.0 keys to v0.2.0 format (adds sync protection + lock protection)
+    Migrate {
+        /// Preview changes without applying
+        #[arg(long)]
+        dry_run: bool,
+    },
+
     /// Run a command with Keychain keys injected as environment variables.
     ///
     /// Keys never appear in stdout, files, or clipboard — the safest way
@@ -103,6 +110,10 @@ enum Commands {
         /// Key names to inject (e.g. -k openai:prod). Omit to inject all runtime keys.
         #[arg(short = 'k', long = "key")]
         keys: Vec<String>,
+
+        /// Show injected key count and env var names on stderr
+        #[arg(long)]
+        verbose: bool,
 
         /// The command and arguments to run (after --)
         #[arg(trailing_var_arg = true, required = true)]
@@ -160,6 +171,10 @@ fn main() {
     let cli = Cli::parse();
     let store = KeychainStore::new();
 
+    // Determine TTY status once — injected into handlers for testability.
+    // Only io::stdout().is_terminal() (isatty) is trusted; env vars like $TERM are not.
+    let stdout_is_tty = io::stdout().is_terminal();
+
     let result = match cli.command {
         Commands::Set { name, kind, force } => cmd_set(&store, &name, &kind, force),
         Commands::Get {
@@ -167,7 +182,15 @@ fn main() {
             show,
             plain,
             force_plain,
-        } => cmd_get(&store, &name, show, plain, force_plain, cli.json),
+        } => cmd_get(
+            &store,
+            &name,
+            show,
+            plain,
+            force_plain,
+            cli.json,
+            stdout_is_tty,
+        ),
         Commands::List { all } => cmd_list(&store, all, cli.json),
         Commands::Rm { name, force } => cmd_rm(&store, &name, force),
         Commands::Usage { provider, refresh } => {
@@ -177,11 +200,22 @@ fn main() {
             template,
             output,
             force,
-        } => cmd_gen(&store, &template, output.as_deref(), force),
-        Commands::Exec { keys, command } => cmd_exec(&store, &keys, &command),
+        } => cmd_gen(&store, &template, output.as_deref(), force, stdout_is_tty),
+        Commands::Migrate { dry_run } => cmd_migrate(&store, dry_run),
+        Commands::Exec {
+            keys,
+            verbose,
+            command,
+        } => cmd_exec(&store, &keys, &command, stdout_is_tty, verbose),
     };
 
     if let Err(e) = result {
+        // TTY guard violations → exit code 2 (distinct from general errors)
+        if let lkr_core::Error::TtyGuard { .. } = e {
+            eprintln!("Error: {}", e);
+            std::process::exit(2);
+        }
+
         eprintln!("Error: {}", e);
 
         // Suggest similar keys for KeyNotFound errors
@@ -239,19 +273,32 @@ fn cmd_get(
     plain: bool,
     force_plain: bool,
     json: bool,
+    stdout_is_tty: bool,
 ) -> lkr_core::Result<()> {
-    let is_tty = io::stdout().is_terminal();
-
-    // TTY guard: block --plain and --show in non-interactive environments
-    // to prevent Agent IDE attacks (prompt injection → key exfiltration).
-    if (plain || show) && !is_tty && !force_plain {
-        eprintln!("Error: --plain and --show are blocked in non-interactive environments.");
-        eprintln!("  This prevents AI agents from extracting raw API keys via pipe.");
-        eprintln!("  Use --force-plain to override (at your own risk).");
-        std::process::exit(2);
+    // v0.2.0 TTY guard: comprehensive non-interactive protection.
+    // Prevents AI agent / prompt-injection key exfiltration via pipe.
+    //
+    // Allowed in non-TTY:
+    //   --force-plain  (explicit user override — warning emitted)
+    //   --json         (masked values only, no --show)
+    // Blocked in non-TTY:
+    //   everything else (bare get, --show, --plain, --json --show)
+    if !stdout_is_tty && !force_plain {
+        let json_masked_only = json && !show;
+        if !json_masked_only {
+            return Err(lkr_core::Error::TtyGuard {
+                message: "`lkr get` is blocked in non-interactive environments.\n  \
+                    This prevents AI agents from extracting raw API keys via pipe.\n\n  \
+                    Allowed alternatives:\n    \
+                    lkr get <key> --json          (masked value only)\n    \
+                    lkr get <key> --force-plain   (raw value, use with caution)\n    \
+                    lkr exec -- <command>          (inject as env var)"
+                    .to_string(),
+            });
+        }
     }
 
-    if force_plain && !is_tty {
+    if force_plain && !stdout_is_tty {
         eprintln!("Warning: outputting raw key value in non-interactive environment.");
     }
 
@@ -267,7 +314,7 @@ fn cmd_get(
     // Copy to clipboard with 30s auto-clear.
     // Security: skip clipboard in non-interactive environments to prevent
     // agent bypass via `lkr get key && pbpaste`.
-    let clipboard_ok = if !is_tty {
+    let clipboard_ok = if !stdout_is_tty {
         eprintln!("Clipboard copy skipped (non-interactive environment).");
         false
     } else {
@@ -436,8 +483,20 @@ fn cmd_gen(
     template: &str,
     output: Option<&str>,
     force: bool,
+    stdout_is_tty: bool,
 ) -> lkr_core::Result<()> {
     use std::path::Path;
+
+    // v0.2.0 TTY guard: block gen in non-interactive environments unless --force.
+    // Generated files contain resolved secrets — risky in agent/CI contexts.
+    if !stdout_is_tty && !force {
+        return Err(lkr_core::Error::TtyGuard {
+            message: "`lkr gen` is blocked in non-interactive environments.\n  \
+                Use `lkr exec -- <command>` to inject keys as env vars instead.\n  \
+                Or use `lkr gen --force` to override."
+                .to_string(),
+        });
+    }
 
     let template_path = Path::new(template);
     if !template_path.exists() {
@@ -546,6 +605,46 @@ fn cmd_gen(
     Ok(())
 }
 
+fn cmd_migrate(store: &KeychainStore, dry_run: bool) -> lkr_core::Result<()> {
+    let result = store.migrate(dry_run)?;
+
+    if result.keys.is_empty() {
+        eprintln!("No keys to migrate.");
+        return Ok(());
+    }
+
+    if dry_run {
+        eprintln!("  Would migrate {} key(s):", result.keys.len());
+        for key in &result.keys {
+            eprintln!(
+                "    {} ({}) — add sync protection + lock protection",
+                key.name, key.kind
+            );
+        }
+        eprintln!("\n  Run `lkr migrate` (without --dry-run) to apply.");
+    } else {
+        for key in &result.keys {
+            if key.success {
+                eprintln!("    {} ({}) — migrated", key.name, key.kind);
+            } else {
+                eprintln!(
+                    "    {} ({}) — FAILED: {}",
+                    key.name,
+                    key.kind,
+                    key.error.as_deref().unwrap_or("unknown error")
+                );
+            }
+        }
+        eprintln!(
+            "\n  Result: {} migrated, {} failed",
+            result.migrated_count(),
+            result.failed_count()
+        );
+    }
+
+    Ok(())
+}
+
 fn cmd_rm(store: &impl KeyStore, name: &str, force: bool) -> lkr_core::Result<()> {
     if !force && !confirm(&format!("Remove key '{}'? [y/N] ", name)) {
         eprintln!("Cancelled.");
@@ -557,7 +656,13 @@ fn cmd_rm(store: &impl KeyStore, name: &str, force: bool) -> lkr_core::Result<()
     Ok(())
 }
 
-fn cmd_exec(store: &impl KeyStore, keys: &[String], command: &[String]) -> lkr_core::Result<()> {
+fn cmd_exec(
+    store: &impl KeyStore,
+    keys: &[String],
+    command: &[String],
+    stdout_is_tty: bool,
+    verbose: bool,
+) -> lkr_core::Result<()> {
     if command.is_empty() {
         return Err(lkr_core::Error::Usage(
             "No command specified. Usage: lkr exec -- <command> [args...]".to_string(),
@@ -591,13 +696,31 @@ fn cmd_exec(store: &impl KeyStore, keys: &[String], command: &[String]) -> lkr_c
         pairs
     };
 
-    if entries.is_empty() {
-        eprintln!("Warning: no keys matched. Running command without injected env vars.");
-    } else {
-        eprintln!("Injecting {} key(s) as env vars:", entries.len());
+    // v0.2.0 stderr output rules:
+    //   TTY + no --verbose   → silent
+    //   TTY + --verbose      → key count + env var names
+    //   non-TTY + no verbose → fixed 1-line warning
+    //   non-TTY + --verbose  → warning + env var names
+    //   0 keys (any)         → always warn
+    let print_env_vars = || {
         for (env_var, _) in &entries {
             eprintln!("  {}", env_var);
         }
+    };
+
+    if entries.is_empty() {
+        eprintln!("Warning: no keys matched. Running command without injected env vars.");
+    } else if !stdout_is_tty {
+        eprintln!(
+            "Warning: injecting {} key(s) in non-interactive environment.",
+            entries.len()
+        );
+        if verbose {
+            print_env_vars();
+        }
+    } else if verbose {
+        eprintln!("Injecting {} key(s) as env vars:", entries.len());
+        print_env_vars();
     }
 
     // Build and exec child process
@@ -626,6 +749,109 @@ mod tests {
     use super::*;
     use lkr_core::keymanager::MockStore;
 
+    // -- TTY guard tests (stdout_is_tty injection) --
+
+    fn setup_store_with_key() -> MockStore {
+        let store = MockStore::new();
+        store
+            .set(
+                "openai:prod",
+                "sk-test-key-12345678",
+                KeyKind::Runtime,
+                false,
+            )
+            .unwrap();
+        store
+    }
+
+    fn is_tty_guard_error(err: &lkr_core::Error) -> bool {
+        matches!(err, lkr_core::Error::TtyGuard { .. })
+    }
+
+    #[test]
+    fn test_get_non_tty_bare_blocked() {
+        let store = setup_store_with_key();
+        // lkr get key (no flags, non-TTY) → blocked
+        let result = cmd_get(&store, "openai:prod", false, false, false, false, false);
+        assert!(result.is_err());
+        assert!(is_tty_guard_error(&result.unwrap_err()));
+    }
+
+    #[test]
+    fn test_get_non_tty_show_blocked() {
+        let store = setup_store_with_key();
+        // lkr get key --show (non-TTY) → blocked
+        let result = cmd_get(&store, "openai:prod", true, false, false, false, false);
+        assert!(result.is_err());
+        assert!(is_tty_guard_error(&result.unwrap_err()));
+    }
+
+    #[test]
+    fn test_get_non_tty_plain_blocked() {
+        let store = setup_store_with_key();
+        // lkr get key --plain (non-TTY) → blocked
+        let result = cmd_get(&store, "openai:prod", false, true, false, false, false);
+        assert!(result.is_err());
+        assert!(is_tty_guard_error(&result.unwrap_err()));
+    }
+
+    #[test]
+    fn test_get_non_tty_json_show_blocked() {
+        let store = setup_store_with_key();
+        // lkr get key --json --show (non-TTY) → blocked (raw value in JSON)
+        let result = cmd_get(&store, "openai:prod", true, false, false, true, false);
+        assert!(result.is_err());
+        assert!(is_tty_guard_error(&result.unwrap_err()));
+    }
+
+    #[test]
+    fn test_get_non_tty_json_masked_passes() {
+        let store = setup_store_with_key();
+        // lkr get key --json (non-TTY, no --show) → pass (masked value)
+        let result = cmd_get(&store, "openai:prod", false, false, false, true, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_get_non_tty_force_plain_passes() {
+        let store = setup_store_with_key();
+        // lkr get key --force-plain (non-TTY) → pass (explicit override)
+        let result = cmd_get(&store, "openai:prod", false, false, true, false, false);
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_get_tty_bare_passes() {
+        let store = setup_store_with_key();
+        // lkr get key (TTY) → pass (clipboard copy + masked display)
+        // Note: clipboard ops will fail in test env, but the function should succeed
+        let result = cmd_get(&store, "openai:prod", false, false, false, false, true);
+        assert!(result.is_ok());
+    }
+
+    // -- gen TTY guard tests --
+
+    #[test]
+    fn test_gen_non_tty_blocked() {
+        let store = setup_store_with_key();
+        // lkr gen (non-TTY, no --force) → blocked
+        let result = cmd_gen(&store, "/nonexistent/template", None, false, false);
+        assert!(result.is_err());
+        assert!(is_tty_guard_error(&result.unwrap_err()));
+    }
+
+    #[test]
+    fn test_gen_non_tty_force_passes() {
+        let store = setup_store_with_key();
+        // lkr gen --force (non-TTY) → passes TTY guard (may fail on file I/O, that's OK)
+        let result = cmd_gen(&store, "/nonexistent/template", None, true, false);
+        // Should NOT be a TtyGuard error — it will be a Template error (file not found)
+        assert!(result.is_err());
+        assert!(!is_tty_guard_error(&result.unwrap_err()));
+    }
+
+    // -- exec tests --
+
     #[test]
     fn test_cmd_exec_rejects_admin_key() {
         let store = MockStore::new();
@@ -637,6 +863,8 @@ mod tests {
             &store,
             &["openai:admin".to_string()],
             &["echo".to_string(), "hello".to_string()],
+            false,
+            false,
         );
 
         assert!(result.is_err());
@@ -676,6 +904,8 @@ mod tests {
             &store,
             &["openai:admin".to_string(), "anthropic:admin".to_string()],
             &["echo".to_string()],
+            false,
+            false,
         );
 
         assert!(result.is_err());
@@ -697,6 +927,8 @@ mod tests {
             &store,
             &["openai:prod".to_string(), "anthropic:admin".to_string()],
             &["echo".to_string()],
+            false,
+            false,
         );
 
         assert!(result.is_err());

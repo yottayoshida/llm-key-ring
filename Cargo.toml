@@ -3,7 +3,7 @@ members = ["crates/lkr-core", "crates/lkr-cli"]
 resolver = "2"
 
 [workspace.package]
-version = "0.1.0"
+version = "0.2.0"
 edition = "2024"
 rust-version = "1.85"
 license = "MIT OR Apache-2.0"
@@ -12,7 +12,6 @@ repository = "https://github.com/yottayoshida/llm-key-ring"
 homepage = "https://github.com/yottayoshida/llm-key-ring"
 
 [workspace.dependencies]
-keyring = { version = "3", features = ["apple-native"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
