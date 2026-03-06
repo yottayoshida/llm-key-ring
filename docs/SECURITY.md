@@ -7,25 +7,71 @@ and the design decisions behind each mitigation.
 > **Honesty policy**: We document limitations alongside protections.
 > Security through obscurity is not security.
 
+## Design Philosophy
+
+LKR is **not** a vault that claims to make secrets absolutely safe.
+
+LKR is a tool that **closes the leaky paths developers actually hit** — plaintext dotfiles,
+shell history, clipboard residue, agent exfiltration, `security find-generic-password` —
+and **funnels usage toward the safest execution path** (`lkr exec`).
+
+The three tenets:
+
+1. **Close leaky paths**: Eliminate common leakage vectors using OS-native mechanisms
+   (Keychain encryption, Custom Keychain isolation, Legacy ACL authorization)
+2. **Make the safe path the easy path**: `lkr exec` is the recommended and most convenient
+   way to use API keys — and it is also the most secure (keys never appear in stdout,
+   files, or clipboard)
+3. **Draw the line honestly**: Same-user arbitrary code execution is outside LKR's protection
+   scope. We document this, not hide it
+
+### Scope and Non-goals
+
+| | In scope (LKR protects) | Out of scope (LKR does not protect) |
+|--|------------------------|-------------------------------------|
+| **What** | Key storage and retrieval paths | Runtime behavior of child processes |
+| **Against** | Casual/automated leakage (file read, CLI scraping, agent exfiltration) | Targeted same-user code execution by an attacker |
+| **How** | OS-native mechanisms (Keychain, ACL, search list isolation) | Application-level encryption or HSM |
+
+### Platform Dependency Risk
+
+v0.3.0's defense relies on **Custom Keychains using the legacy CSSM format**, where Legacy ACL
+trusted application lists are enforced because partition IDs do not exist. This works today
+(macOS 14 Sonoma verified) and has worked since Custom Keychains were introduced.
+
+However, Apple's direction favors Data Protection Keychains and modern APIs. If a future macOS
+version changes Custom Keychain behavior (e.g., adding partition IDs to CSSM, deprecating
+`security create-keychain`), Layer 2 (Authorization) could be weakened.
+
+**Mitigations**:
+- `lkr doctor` detects degradation (ACL not enforced, search list pollution)
+- `lkr harden` re-registers ACL, serving as a migration point if the mechanism changes
+- Layer 1 (Isolation via search list) is independent of ACL and provides baseline protection
+- The architecture is designed to be **migrated, not permanent** — if Apple provides a
+  better mechanism accessible to unsigned binaries, LKR will adopt it
+
 ## Attack Surface Comparison: `.env` vs LKR
 
-| Attack Vector | `.env` plaintext | LKR v0.1.0 | LKR v0.2.0 | Notes |
-|---------------|:---:|:---:|:---:|-------|
-| `cat .env` / file read | Exposed | N/A | N/A | LKR eliminates persistent plaintext files |
-| `grep -r API_KEY .` in project | Exposed | N/A | N/A | No files to grep |
-| Git commit of secrets | Exposed | N/A | N/A | Nothing to commit |
-| `security find-generic-password` (runtime) | N/A | Exposed | Exposed | Requires login Keychain access |
-| `security find-generic-password` (admin) | N/A | Exposed | Exposed | ACL requires Apple Developer ID signing (see below) |
-| Shell history exposure | Exposed (if `export KEY=...`) | Protected | Protected | `lkr set` uses hidden prompt |
-| AI agent pipe exfiltration | Exposed (`cat .env`) | Partial | **Protected** | v0.2.0 blocks all non-TTY `get` access |
-| iCloud Keychain sync to other devices | N/A | **Unprotected** | **Protected** | `kSecAttrSynchronizable: false` |
-| Access while device is locked | N/A | **Unprotected** | **Protected** | `kSecAttrAccessibleWhenUnlocked` |
-| Memory dump | Exposed (plaintext in memory) | Partial | Partial | `Zeroizing<String>` with FFI gap (see below) |
+| Attack Vector | `.env` plaintext | LKR v0.1.0 | LKR v0.2.0 | LKR v0.3.0 | Notes |
+|---------------|:---:|:---:|:---:|:---:|-------|
+| `cat .env` / file read | Exposed | N/A | N/A | N/A | LKR eliminates persistent plaintext files |
+| `grep -r API_KEY .` in project | Exposed | N/A | N/A | N/A | No files to grep |
+| Git commit of secrets | Exposed | N/A | N/A | N/A | Nothing to commit |
+| `security find-generic-password` (default) | N/A | Exposed | Exposed | **Protected** | v0.3.0: Custom Keychain not in search list (Layer 1) |
+| `security find-generic-password` (explicit path) | N/A | Exposed | Exposed | **Protected** | v0.3.0: Legacy ACL blocks non-lkr binaries (Layer 2) |
+| Binary replacement at lkr path | N/A | N/A | N/A | **Protected** | v0.3.0: cdhash mismatch detected (Layer 3) |
+| Shell history exposure | Exposed (if `export KEY=...`) | Protected | Protected | Protected | `lkr set` uses hidden prompt |
+| AI agent pipe exfiltration | Exposed (`cat .env`) | Partial | **Protected** | **Protected** | v0.2.0 blocks all non-TTY `get` access |
+| iCloud Keychain sync to other devices | N/A | **Unprotected** | **Protected** | **Protected** | `kSecAttrSynchronizable: false` |
+| Access while device is locked | N/A | **Unprotected** | **Protected** | **Protected** | `kSecAttrAccessibleWhenUnlocked` |
+| Memory dump | Exposed (plaintext in memory) | Partial | Partial | Partial | `Zeroizing<String>` with FFI gap (see below) |
+| Same-user arbitrary code execution | Exposed | Exposed | Exposed | Exposed | **Out of scope** — see Design Philosophy |
 
-**Summary**: LKR v0.2.0 eliminates 3 of the 4 most common attack vectors (plaintext files,
-git commits, shell history) and adds protection against iCloud sync, locked-device access,
-and comprehensive AI agent exfiltration. The remaining gap (`security find-generic-password`)
-requires Apple Developer ID code signing — see "Keychain ACL Investigation" below.
+**Summary**: LKR v0.3.0 closes the last "Exposed" vector from v0.2.0 — `security find-generic-password`
+— via Custom Keychain isolation (Layer 1) and Legacy ACL cdhash authorization (Layer 2/3).
+Combined with v0.2.0's TTY guard and attribute hardening, all common developer leakage paths
+are now protected. The remaining "Exposed" row (same-user code execution) is an explicit
+non-goal — see Design Philosophy above.
 
 ## Threat Overview
 
@@ -42,6 +88,8 @@ requires Apple Developer ID code signing — see "Keychain ACL Investigation" be
 | T9 | Log/error message key leakage | Low | Error messages never include key values; only key names | By design |
 | T10 | iCloud Keychain sync | High | `kSecAttrSynchronizable: false` on all keys | **v0.2.0 new** |
 | T11 | Locked device access | Medium | `kSecAttrAccessibleWhenUnlocked` on all keys | **v0.2.0 new** |
+| T12 | `security find-generic-password` reads keys | **Critical** | Custom Keychain (isolation) + Legacy ACL (cdhash authorization) | **v0.3.0 new** |
+| T13 | Binary replacement to bypass ACL | High | cdhash-based ACL requirement detects binary mismatch | **v0.3.0 new** |
 
 ## Detailed Threat Analysis
 
@@ -106,23 +154,34 @@ Use `lkr migrate --dry-run` to preview changes without applying.
 
 ### What LKR Does NOT Protect Against
 
-These are **known limitations** — users should be aware:
+These are **known limitations** — users should be aware.
 
-| Scenario | Why it's a limitation | Mitigation / Roadmap |
-|----------|----------------------|---------------------|
-| `security find-generic-password` reads runtime keys | Unsigned binary cannot set Keychain ACL (requires Apple Developer ID — see investigation below) | **Known limitation**: Use `lkr exec` instead of direct key retrieval |
+LKR protects the **storage and retrieval paths** of API keys. It does NOT protect against
+an attacker who has same-user code execution and chooses to attack the runtime (process
+memory, environment variables, network traffic). This is a deliberate scope boundary,
+not a gap waiting to be fixed.
+
+| Scenario | Why it's a limitation | Mitigation |
+|----------|----------------------|------------|
+| Attacker knows keychain path + password | Custom Keychain password is the last line of defense | Use a strong, unique password; lock keychain when not in use |
+| Attacker runs `lkr exec` directly | Same-user code execution = game over for any local tool | **Out of scope**; same limitation as aws-vault, 1Password CLI, etc. |
 | Root/admin access to the machine | macOS Keychain is unlocked when the user is logged in | Use FileVault; lock screen when away |
+| `security dump-keychain -d` with keychain password | Reads all items (requires password) | Password is the defense; same as aws-vault |
 | Agent reads generated `.env` file via `cat` | File exists on disk after `lkr gen` | Use `lkr exec` instead; delete generated files after use |
 | IDE with pseudo-TTY (pty) bypasses TTY guard | Some IDEs allocate a pty; `isatty` returns true | TTY guard is defense-in-depth; use `lkr exec` as primary |
 | Child process logs env vars after `lkr exec` | LKR has no control over child behavior | Audit child programs; avoid untrusted commands |
 | Clipboard manager capturing copied keys | Third-party clipboard managers may persist history | 30s auto-clear mitigates; disable clipboard managers for sensitive use |
-| Unsigned binary path replacement | Attacker replaces `lkr` binary; Keychain allows access to same-service items | **Known limitation**: Verify binary integrity manually (`sha256sum`) |
+| macOS deprecates Custom Keychain / CSSM format | Layer 2 (ACL) may stop working | `lkr doctor` detects; Layer 1 (isolation) is independent; see Platform Dependency Risk |
 
-### Keychain ACL Investigation (v0.2.1)
+### Keychain ACL Investigation (v0.2.1 — updated v0.3.0)
 
-macOS Keychain ACL (`SecAccessControlCreateWithFlags`) could block `security find-generic-password`
-from reading keys without biometric authentication. However, ACL requires code signing with a
-valid Team ID from the Apple Developer Program ($99/year).
+macOS Keychain has two distinct ACL mechanisms. We investigated both to determine
+whether either can block `security find-generic-password` from reading keys.
+
+#### Approach 1: Modern ACL (`SecAccessControlCreateWithFlags`)
+
+Uses `kSecAttrAccessControl` with flags like Touch ID, device passcode, or application password.
+Requires code signing with a valid Team ID from the Apple Developer Program ($99/year).
 
 We tested three signing approaches — all failed:
 
@@ -132,11 +191,111 @@ We tested three signing approaches — all failed:
 | Self-signed certificate (no entitlements) | Failed | `errSecMissingEntitlement (-34018)` |
 | Self-signed certificate + `keychain-access-groups` entitlement | Failed | Process killed by `amfid` |
 
-**Conclusion**: Keychain ACL is only available to binaries signed with an Apple Developer ID
-(requires Apple Developer Program, $99/year). Binaries installed via `cargo install` or
-Homebrew source-build cannot use ACL. This is a **permanent known limitation** of the
-unsigned distribution model. The `security find-generic-password` attack vector remains
-open — mitigated by `lkr exec` (keys never in stdout) and defense-in-depth layers above.
+**Verdict**: NO-GO. Modern ACL requires Apple Developer ID ($99/year).
+
+#### Approach 2: Legacy ACL (`SecAccessCreate` / `security -T`)
+
+Uses `kSecAttrAccess` with trusted application lists (`SecTrustedApplicationCreateFromPath`).
+Does not require code signing — predates the modern ACL system.
+
+We tested via the `security` CLI's `-T` flag:
+
+| Test | Command | Expected | Actual |
+|------|---------|----------|--------|
+| Empty trust list | `add-generic-password -T ""` | Prompt or block | **Plain text returned silently** |
+| lkr-only trust | `add-generic-password -T /path/to/lkr` | Block `security` binary | **Plain text returned silently** |
+
+**Root cause**: macOS 10.12+ introduced **partition IDs** (`apple-tool:,apple:`) that override
+Legacy ACL trusted application lists. The `security` binary is an Apple system tool with
+`apple-tool:` partition access, granting it unconditional read access regardless of the
+trusted application list. This partition ID is set automatically when items are created
+via the `security` CLI and cannot be removed by unsigned binaries.
+
+**Verdict**: NO-GO. Legacy ACL cannot block `security find-generic-password`.
+
+#### Approach 3: Custom Keychain (aws-vault approach) — v0.3.0
+
+Instead of ACL, use a **separate keychain file** that is not in the default search list.
+`security find-generic-password` only searches keychains in the search list.
+
+We tested via the `security` CLI:
+
+| Test | Expected | Actual |
+|------|----------|--------|
+| Create custom keychain | Success | **PASS** |
+| Default search (`find-generic-password` without keychain arg) | Not found | **PASS** — `errSecItemNotFound` |
+| Explicit path (`find-generic-password ... keychain.db`) | Found | **PASS** |
+| Lock keychain → read | Blocked | **PASS** — exit code 128 |
+| Unlock → read again | Found | **PASS** |
+| Add to search list → default search | Found | **PASS** (confirms isolation mechanism) |
+| Remove from search list → default search | Not found | **PASS** (isolation restored) |
+
+**Verdict**: GO. Custom Keychain eliminates the `security find-generic-password` attack vector
+by keeping the keychain file outside the default search list. The attacker would need to know
+the keychain file path AND its password (or have it unlocked) to access items.
+
+#### Approach 3+: Custom Keychain + Legacy ACL (combined defense)
+
+A follow-up spike revealed that **Legacy ACL works on Custom Keychains** — because Custom
+Keychains do not use partition IDs. This means the V1 FAIL (Legacy ACL on login.keychain)
+does not apply here.
+
+When items are created with `-T /path/to/lkr`, macOS automatically sets a **cdhash-based
+requirement** in the ACL:
+
+```
+applications (1):
+    0: /path/to/lkr (OK)
+        requirement: cdhash H"<sha256-of-binary>"
+```
+
+We tested three ACL configurations on a Custom Keychain:
+
+| ACL Setting | `security find-generic-password` | Notes |
+|-------------|:---:|-------|
+| Default (no `-T`) | **Silent read** | `security` binary auto-added as trusted app |
+| `-T ""` (empty trust list) | **Blocked** (dialog → exit 128) | No trusted apps = always prompt |
+| `-T /path/to/lkr` (lkr-only) | **Blocked** (dialog → exit 128) | Only lkr trusted; `security` not in list |
+| `-T /path/to/lkr -T /usr/bin/security` | **Silent read** | Control: adding `security` restores silent access |
+
+**Binary replacement resistance**: After replacing the signed binary at the same path (changing
+its cdhash), the ACL entry changed from `(OK)` to `(status -2147415734)` — the cdhash
+mismatch is detected even when the binary path remains identical.
+
+**Key insight**: Custom Keychains use the legacy CSSM keychain format, which does NOT have
+partition IDs (`apple-tool:`, `apple:`). Without partition IDs, Legacy ACL trusted application
+lists are enforced as designed. This is why `-T` failed on login.keychain (V1) but works
+on Custom Keychains.
+
+**Trade-off**: The cdhash requirement means every binary rebuild (e.g., `cargo install --force`)
+changes the hash, requiring ACL re-registration. This is addressable via `lkr harden` or
+automatic re-registration on first access.
+
+**Verdict**: GO. Custom Keychain + Legacy ACL provides **both isolation (not in search list)
+and authorization (cdhash-based trusted app)**. This is the v0.3.0 target architecture.
+
+#### ACL Enforcement Is Independent of Lock State
+
+A critical property verified during spike testing: **Legacy ACL trusted application lists
+are enforced whether the Custom Keychain is locked or unlocked.** An unlocked keychain does
+NOT grant bypass of the `-T` trusted app list. This means:
+
+- `security find-generic-password` is blocked by ACL regardless of lock state
+- Lock state only gates access by the **trusted binary itself** (i.e., `lkr`)
+- Since same-user code execution is out of scope (I4), lock state serves primarily as
+  a physical-access defense (sleep lock) and user-preference option (timeout)
+
+This property is why v0.3.0 uses a **session-maintained unlock** policy (lock on sleep,
+no per-command locking) rather than aggressive per-operation locking.
+
+#### Summary
+
+| Approach | Blocks `security find-generic-password`? | Requires Apple Developer ID? | Status |
+|----------|:---:|:---:|--------|
+| Modern ACL (`SecAccessControlCreateWithFlags`) | Potentially | **Yes** ($99/year) | NO-GO |
+| Legacy ACL on login.keychain (`-T`) | **No** (partition ID bypass) | No | NO-GO |
+| Custom Keychain (isolation only) | **Yes** (default search) | No | GO |
+| **Custom Keychain + Legacy ACL** | **Yes** (default search + explicit path) | No | **v0.3.0 target** |
 
 ### FFI Memory Gap
 
@@ -163,6 +322,18 @@ string conversions).
 9. **Memory hygiene** — `Zeroizing<String>` for all secret values (with documented FFI gap)
 10. **Honest threat model** — limitations are documented, not hidden
 
+### Design Invariants (v0.3.0)
+
+These are **absolute rules** that must never be violated. Breaking any of these
+collapses the security model.
+
+| # | Invariant | What breaks if violated |
+|---|-----------|------------------------|
+| I1 | `lkr.keychain-db` must NEVER be in the default search list | Layer 1 (Isolation) — `security find-generic-password` finds keys without explicit path |
+| I2 | `/usr/bin/security` must NEVER be in any item's trusted app list (`-T`) | Layer 2 (Authorization) — `security` reads keys silently even with explicit path |
+| I3 | `lkr get` must NEVER be the recommended path for automation | Design Philosophy — `exec` is the safe path; promoting `get` invites leakage |
+| I4 | LKR must NEVER claim to protect against same-user code execution | Honesty policy — overpromising destroys trust and leads to false sense of security |
+
 ## Key Storage Format
 
 Keys are stored in macOS Keychain as Generic Password items:
@@ -182,8 +353,9 @@ enabling kind-based access control without separate metadata storage.
 
 | Version | Security Focus |
 |---------|---------------|
-| **v0.2.0** (current) | Keychain attribute hardening + comprehensive TTY guard |
-| **v0.3.0** | DX improvement (`lkr init`, shell completions, Homebrew tap) |
+| **v0.2.0** | Keychain attribute hardening + comprehensive TTY guard |
+| **v0.3.0** (next) | Custom Keychain + Legacy ACL (3-layer defense: isolation + cdhash authorization + binary integrity) |
+| **v0.3.1** | `lkr doctor` diagnostics + optional lock timeout + shell completions + Homebrew tap |
 | v0.4.0 | MCP server with scoped access tokens |
 
 ## Reporting Security Issues

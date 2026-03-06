@@ -274,6 +274,46 @@ lkr migrate              # Apply
 # Or:     lkr gen .env.example --force
 ```
 
+## Upgrading to v0.3.0 (preview)
+
+> v0.3.0 is a **breaking change**. Keys are moved from login.keychain to a dedicated
+> Custom Keychain with 3-layer defense against `security find-generic-password` attacks.
+
+### What changes
+
+| Before (v0.2.x) | After (v0.3.0) |
+|-----------------|----------------|
+| Keys in login.keychain (auto-unlocked at login) | Keys in `lkr.keychain-db` (separate password) |
+| `security find-generic-password` can read keys | **Blocked** — search list isolation + ACL |
+| Binary replacement is undetected | **Detected** — cdhash-based integrity check |
+| No setup step required | **`lkr init` required** before first use |
+
+### Upgrade steps (will be finalized in v0.3.0 release)
+
+```bash
+# 1. Update lkr
+cargo install --path crates/lkr-cli --force
+
+# 2. Create dedicated keychain (new in v0.3.0)
+lkr init                # Set a keychain password (remember it!)
+
+# 3. Move keys from login.keychain → lkr.keychain-db
+lkr migrate --dry-run   # Preview
+lkr migrate              # Apply (copy-first: safe to re-run)
+
+# 4. After future binary updates:
+lkr harden              # Refresh binary fingerprint for all keys
+```
+
+### New commands in v0.3.0
+
+| Command | Purpose |
+|---------|---------|
+| `lkr init` | Create `lkr.keychain-db`, set password, enable lock-on-sleep |
+| `lkr migrate` | Move keys from login.keychain → custom keychain (with ACL) |
+| `lkr harden` | Re-register binary fingerprint after `cargo install --force` |
+| `lkr lock` | Explicitly lock `lkr.keychain-db` |
+
 ## Exit Codes
 
 | Code | Meaning |
@@ -286,9 +326,10 @@ lkr migrate              # Apply
 
 | Version | Theme | Key Changes |
 |---------|-------|-------------|
-| **v0.2.1** (current) | Security Hardening | Keychain attribute hardening, comprehensive TTY guard, `lkr migrate`, ACL investigation |
-| **v0.3.0** | DX Improvement | `lkr init` (.env import), shell completions, Homebrew tap |
-| v0.4.0 | MCP Server | IDE integration for secure key access |
+| **v0.2.2** (current) | Docs & Roadmap | Roadmap update, v0.3.0 upgrade guide preview |
+| **v0.3.0** (next) | **Security: 3-Layer Defense** | Custom Keychain (`lkr.keychain-db`) + Legacy ACL + cdhash. **Breaking change** — see below |
+| v0.3.1 | Operational Quality | `lkr doctor`, shell completions, Homebrew tap, `lkr config lock-timeout` |
+| v0.3.2 | MCP Server | IDE integration for secure key access |
 
 ## Development
 
