@@ -344,9 +344,10 @@ remain readable via v0.2.x fallback until you manually remove them.
 | Version | Theme | Key Changes |
 |---------|-------|-------------|
 | v0.2.2 | Docs & Roadmap | Roadmap update, v0.3.0 upgrade guide preview |
-| **v0.3.0** (current) | **Security: 3-Layer Defense** | Custom Keychain (`lkr.keychain-db`) + Legacy ACL via Pure FFI + cdhash. **Breaking change** — see below |
-| v0.3.1 | Operational Quality | `lkr doctor`, shell completions, Homebrew tap, `lkr config lock-timeout` |
-| v0.3.2 | MCP Server | IDE integration for secure key access |
+| **v0.3.0** | **Security: 3-Layer Defense** | Custom Keychain (`lkr.keychain-db`) + Legacy ACL via Pure FFI + cdhash. **Breaking change** — see below |
+| **v0.3.1** (current) | **Security Hardening** | ACL fail-closed, `keychain_path()` safety, `StoredEntry` zeroize-on-drop, `-25308` auto-diagnosis |
+| v0.3.2 | Operational Quality | Shell completions, Homebrew tap, `lkr config lock-timeout` |
+| v0.4.0 | MCP Server | IDE integration for secure key access |
 
 ## Development
 
