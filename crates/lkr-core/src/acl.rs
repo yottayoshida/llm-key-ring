@@ -14,10 +14,7 @@ use std::path::Path;
 
 // ── Hand-declared Security.framework symbols ────────────────────
 unsafe extern "C" {
-    fn SecTrustedApplicationCreateFromPath(
-        path: *const i8,
-        app_out: *mut *mut c_void,
-    ) -> i32;
+    fn SecTrustedApplicationCreateFromPath(path: *const i8, app_out: *mut *mut c_void) -> i32;
 
     fn SecAccessCreate(
         descriptor: *const c_void,
@@ -25,10 +22,7 @@ unsafe extern "C" {
         access_out: *mut *mut c_void,
     ) -> i32;
 
-    fn SecKeychainItemCopyAccess(
-        item_ref: *const c_void,
-        access_out: *mut *mut c_void,
-    ) -> i32;
+    fn SecKeychainItemCopyAccess(item_ref: *const c_void, access_out: *mut *mut c_void) -> i32;
 }
 
 // ── Core Foundation helpers ─────────────────────────────────────
@@ -88,8 +82,7 @@ pub fn build_access(lkr_binary_path: &Path) -> Result<*mut c_void> {
     unsafe {
         // Step 1: Create a trusted application reference for the LKR binary
         let mut trusted_app: *mut c_void = std::ptr::null_mut();
-        let ta_status =
-            SecTrustedApplicationCreateFromPath(path_cstr.as_ptr(), &mut trusted_app);
+        let ta_status = SecTrustedApplicationCreateFromPath(path_cstr.as_ptr(), &mut trusted_app);
         if ta_status != 0 {
             return Err(Error::Acl(format!(
                 "SecTrustedApplicationCreateFromPath failed: OSStatus {ta_status}"
@@ -97,11 +90,8 @@ pub fn build_access(lkr_binary_path: &Path) -> Result<*mut c_void> {
         }
 
         // Step 2: Build a CFArray containing only our trusted application
-        let trusted_list = CFArrayCreateMutable(
-            std::ptr::null(),
-            1,
-            &kCFTypeArrayCallBacks as *const c_void,
-        );
+        let trusted_list =
+            CFArrayCreateMutable(std::ptr::null(), 1, &kCFTypeArrayCallBacks as *const c_void);
         CFArrayAppendValue(trusted_list, trusted_app as _);
 
         // Step 3: Create the access descriptor string
@@ -140,7 +130,10 @@ pub fn build_access(lkr_binary_path: &Path) -> Result<*mut c_void> {
 /// that the ACL is blocking access (Layer 2 defense is active).
 ///
 /// Returns `true` if ACL mismatch is confirmed (harden candidate).
-pub fn is_acl_blocked(item_ref: *const c_void) -> bool {
+///
+/// # Safety
+/// `item_ref` must be a valid `SecKeychainItemRef` or null.
+pub unsafe fn is_acl_blocked(item_ref: *const c_void) -> bool {
     if item_ref.is_null() {
         return false;
     }
@@ -174,7 +167,6 @@ pub fn current_binary_path() -> Result<std::path::PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::path::PathBuf;
 
     // -- SR5: path validation --
 
@@ -247,6 +239,6 @@ mod tests {
 
     #[test]
     fn test_is_acl_blocked_null_item() {
-        assert!(!is_acl_blocked(std::ptr::null()));
+        assert!(unsafe { !is_acl_blocked(std::ptr::null()) });
     }
 }

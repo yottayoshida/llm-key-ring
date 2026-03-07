@@ -211,10 +211,7 @@ mod keychain_raw {
             item_ref: *mut *mut c_void,
         ) -> i32;
 
-        fn SecKeychainItemFreeContent(
-            attr_list: *const c_void,
-            data: *const c_void,
-        ) -> i32;
+        fn SecKeychainItemFreeContent(attr_list: *const c_void, data: *const c_void) -> i32;
 
         fn SecKeychainItemDelete(item_ref: *const c_void) -> i32;
     }
@@ -531,9 +528,8 @@ mod keychain_raw {
         }
 
         // Copy data out before freeing
-        let bytes =
-            unsafe { std::slice::from_raw_parts(pw_data as *const u8, pw_length as usize) }
-                .to_vec();
+        let bytes = unsafe { std::slice::from_raw_parts(pw_data as *const u8, pw_length as usize) }
+            .to_vec();
 
         // Free the password data allocated by Security.framework
         unsafe {
@@ -644,11 +640,8 @@ mod keychain_raw {
             CFDictionarySetValue(dict, kSecMatchLimit as _, kSecMatchLimitAll as _);
 
             // Scope to Custom Keychain only
-            let kc_array = CFArrayCreateMutable(
-                std::ptr::null(),
-                1,
-                &kCFTypeArrayCallBacks as *const c_void,
-            );
+            let kc_array =
+                CFArrayCreateMutable(std::ptr::null(), 1, &kCFTypeArrayCallBacks as *const c_void);
             CFArrayAppendValue(kc_array, keychain.as_concrete_TypeRef() as _);
             CFDictionarySetValue(dict, kSecMatchSearchList as _, kc_array as _);
 
@@ -672,14 +665,8 @@ mod keychain_raw {
             unsafe extern "C" {
                 fn CFArrayGetCount(array: *const c_void) -> isize;
                 fn CFArrayGetValueAtIndex(array: *const c_void, idx: isize) -> *const c_void;
-                fn CFDictionaryGetValue(
-                    dict: *const c_void,
-                    key: *const c_void,
-                ) -> *const c_void;
-                fn CFStringGetCStringPtr(
-                    string: *const c_void,
-                    encoding: u32,
-                ) -> *const i8;
+                fn CFDictionaryGetValue(dict: *const c_void, key: *const c_void) -> *const c_void;
+                fn CFStringGetCStringPtr(string: *const c_void, encoding: u32) -> *const i8;
             }
 
             let count = CFArrayGetCount(result);
@@ -732,9 +719,7 @@ impl KeychainStore {
     ///
     /// The keychain must already be opened (and ideally unlocked).
     /// Use `custom_keychain::open()` + `custom_keychain::unlock()` first.
-    pub fn new_v3(
-        keychain: security_framework::os::macos::keychain::SecKeychain,
-    ) -> Self {
+    pub fn new_v3(keychain: security_framework::os::macos::keychain::SecKeychain) -> Self {
         Self {
             service: SERVICE_NAME.to_string(),
             custom_keychain: Some(keychain),
@@ -744,13 +729,6 @@ impl KeychainStore {
     /// Check if this store is in v0.3.0 mode (Custom Keychain).
     pub fn is_v3(&self) -> bool {
         self.custom_keychain.is_some()
-    }
-
-    /// Get a reference to the custom keychain, or error if in legacy mode.
-    fn require_custom_keychain(
-        &self,
-    ) -> Result<&security_framework::os::macos::keychain::SecKeychain> {
-        self.custom_keychain.as_ref().ok_or(Error::NotInitialized)
     }
 
     /// Extract the account name (kSecAttrAccount) from a CFDictionary.
@@ -990,9 +968,7 @@ impl KeyStore for KeychainStore {
             let results = match results {
                 Ok(r) => r,
                 Err(e) if e.code() == -25300 => return Ok(vec![]),
-                Err(e) => {
-                    return Err(Error::Keychain(format!("Keychain search failed: {}", e)))
-                }
+                Err(e) => return Err(Error::Keychain(format!("Keychain search failed: {}", e))),
             };
 
             let mut entries = Vec::new();
