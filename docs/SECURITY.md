@@ -41,7 +41,7 @@ trusted application lists are enforced because partition IDs do not exist. This 
 
 However, Apple's direction favors Data Protection Keychains and modern APIs. If a future macOS
 version changes Custom Keychain behavior (e.g., adding partition IDs to CSSM, deprecating
-`security create-keychain`), Layer 2 (Authorization) could be weakened.
+Custom Keychain creation APIs), Layer 2 (Authorization) could be weakened.
 
 **Mitigations**:
 - `lkr doctor` detects degradation (ACL not enforced, search list pollution)
@@ -354,7 +354,7 @@ enabling kind-based access control without separate metadata storage.
 | Version | Security Focus |
 |---------|---------------|
 | **v0.2.0** | Keychain attribute hardening + comprehensive TTY guard |
-| **v0.3.0** (next) | Custom Keychain + Legacy ACL (3-layer defense: isolation + cdhash authorization + binary integrity) |
+| **v0.3.0** (current) | Custom Keychain + Legacy ACL via Pure FFI (3-layer defense: isolation + cdhash authorization + binary integrity) |
 | **v0.3.1** | `lkr doctor` diagnostics + optional lock timeout + shell completions + Homebrew tap |
 | v0.4.0 | MCP server with scoped access tokens |
 

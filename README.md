@@ -115,15 +115,15 @@ Generated files are written with `0600` permissions. A warning is shown if the o
 
 When multiple runtime keys exist for the same provider (e.g., `openai:prod` and `openai:stg`), the alphabetically first key is used. A warning lists alternatives. Use `{{lkr:provider:label}}` placeholders for explicit control.
 
-### Migrate keys (v0.1.x → v0.2.0)
+### Migrate keys
 
 ```bash
-lkr migrate --dry-run   # Preview what would change
-lkr migrate             # Apply: adds sync protection + lock protection
+lkr migrate --dry-run   # Preview what would be migrated
+lkr migrate             # Copy keys from login.keychain → lkr.keychain-db (v0.3.0)
 ```
 
-Adds `kSecAttrSynchronizable: false` (no iCloud sync) and `kSecAttrAccessibleWhenUnlocked`
-(locked device blocks access) to all existing keys. Safe to run multiple times (idempotent).
+**v0.3.0**: Copies keys from login.keychain to the custom keychain with Legacy ACL applied.
+Requires `lkr init` first. Safe to run multiple times (skips existing keys).
 
 ### Delete a key
 
@@ -217,15 +217,26 @@ lkr exec -- python script.py
 ```
 llm-key-ring/
 ├── crates/
-│   ├── lkr-core/     # Library: KeyStore trait, Keychain, templates, usage API
-│   └── lkr-cli/      # Binary: clap CLI (set/get/list/rm/gen/usage/exec/migrate)
+│   ├── lkr-core/           # Library: KeyStore trait, Keychain, templates, usage API
+│   │   ├── src/
+│   │   │   ├── keymanager.rs       # KeychainStore + keychain_raw FFI (CRUD)
+│   │   │   ├── custom_keychain.rs  # Keychain lifecycle (create/open/unlock/lock) [v0.3.0]
+│   │   │   ├── acl.rs             # Legacy ACL builder (SecAccessCreate) [v0.3.0]
+│   │   │   └── error.rs           # Error types + OSStatus constants
+│   │   └── tests/
+│   │       └── keychain_integration.rs  # Tier 2 contract tests [v0.3.0]
+│   └── lkr-cli/            # Binary: clap CLI (init/set/get/list/rm/gen/usage/exec/migrate/harden/lock)
 ├── docs/
-│   └── SECURITY.md   # Threat model
+│   ├── SECURITY.md          # Threat model + attack surface
+│   └── design-v030.md       # v0.3.0 design document
 ├── LICENSE-MIT
 └── LICENSE-APACHE
 ```
 
-All business logic lives in `lkr-core`. The CLI is a thin wrapper.
+All business logic lives in `lkr-core`. The CLI is a thin wrapper. v0.3.0 adds three key modules:
+- **`custom_keychain`**: Dedicated keychain lifecycle management via Security.framework FFI
+- **`acl`**: Legacy ACL builder using `SecAccessCreate` + `SecTrustedApplicationCreateFromPath`
+- **`keychain_raw`**: Low-level item CRUD via `SecKeychainItemCreateFromContent` (with initial ACL)
 
 ### Platform Support
 
@@ -235,9 +246,11 @@ Currently macOS only (uses native Keychain via `security-framework` / `security-
 
 | Field | Value |
 |-------|-------|
+| Keychain | `~/Library/Keychains/lkr.keychain-db` (v0.3.0+, NOT in search list) |
 | Service | `com.llm-key-ring` |
 | Account | `{provider}:{label}` |
 | Password | `{"value":"sk-...","kind":"runtime"}` |
+| ACL | `SecAccessRef` trusting only the lkr binary (cdhash-based, v0.3.0+) |
 | Synchronizable | `false` (v0.2.0+, no iCloud sync) |
 | Accessible | `WhenUnlocked` (v0.2.0+) |
 
@@ -274,7 +287,7 @@ lkr migrate              # Apply
 # Or:     lkr gen .env.example --force
 ```
 
-## Upgrading to v0.3.0 (preview)
+## Upgrading to v0.3.0
 
 > v0.3.0 is a **breaking change**. Keys are moved from login.keychain to a dedicated
 > Custom Keychain with 3-layer defense against `security find-generic-password` attacks.
@@ -283,12 +296,13 @@ lkr migrate              # Apply
 
 | Before (v0.2.x) | After (v0.3.0) |
 |-----------------|----------------|
-| Keys in login.keychain (auto-unlocked at login) | Keys in `lkr.keychain-db` (separate password) |
-| `security find-generic-password` can read keys | **Blocked** — search list isolation + ACL |
+| Keys in login.keychain (auto-unlocked at login) | Keys in `lkr.keychain-db` (separate password, auto-lock 5min) |
+| `security find-generic-password` can read keys | **Blocked** — search list isolation + Legacy ACL |
 | Binary replacement is undetected | **Detected** — cdhash-based integrity check |
 | No setup step required | **`lkr init` required** before first use |
+| All operations via `security-framework` crate | Pure FFI: `SecKeychainItemCreateFromContent` + `SecAccessCreate` |
 
-### Upgrade steps (will be finalized in v0.3.0 release)
+### Upgrade steps
 
 ```bash
 # 1. Update lkr
@@ -298,19 +312,22 @@ cargo install --path crates/lkr-cli --force
 lkr init                # Set a keychain password (remember it!)
 
 # 3. Move keys from login.keychain → lkr.keychain-db
-lkr migrate --dry-run   # Preview
-lkr migrate              # Apply (copy-first: safe to re-run)
+lkr migrate --dry-run   # Preview what would be migrated
+lkr migrate              # Apply (copy-first with verify readback, safe to re-run)
 
-# 4. After future binary updates:
-lkr harden              # Refresh binary fingerprint for all keys
+# 4. After future binary updates (cargo install --force):
+lkr harden              # Refresh binary fingerprint (cdhash) for all keys
 ```
+
+**Note**: `lkr migrate` copies keys (does not delete from login.keychain). Legacy keys
+remain readable via v0.2.x fallback until you manually remove them.
 
 ### New commands in v0.3.0
 
 | Command | Purpose |
 |---------|---------|
-| `lkr init` | Create `lkr.keychain-db`, set password, enable lock-on-sleep |
-| `lkr migrate` | Move keys from login.keychain → custom keychain (with ACL) |
+| `lkr init` | Create `lkr.keychain-db`, set password, enable lock-on-sleep + 5min auto-lock |
+| `lkr migrate` | Copy keys from login.keychain → custom keychain (with ACL) |
 | `lkr harden` | Re-register binary fingerprint after `cargo install --force` |
 | `lkr lock` | Explicitly lock `lkr.keychain-db` |
 
@@ -326,8 +343,8 @@ lkr harden              # Refresh binary fingerprint for all keys
 
 | Version | Theme | Key Changes |
 |---------|-------|-------------|
-| **v0.2.2** (current) | Docs & Roadmap | Roadmap update, v0.3.0 upgrade guide preview |
-| **v0.3.0** (next) | **Security: 3-Layer Defense** | Custom Keychain (`lkr.keychain-db`) + Legacy ACL + cdhash. **Breaking change** — see below |
+| v0.2.2 | Docs & Roadmap | Roadmap update, v0.3.0 upgrade guide preview |
+| **v0.3.0** (current) | **Security: 3-Layer Defense** | Custom Keychain (`lkr.keychain-db`) + Legacy ACL via Pure FFI + cdhash. **Breaking change** — see below |
 | v0.3.1 | Operational Quality | `lkr doctor`, shell completions, Homebrew tap, `lkr config lock-timeout` |
 | v0.3.2 | MCP Server | IDE integration for secure key access |
 
