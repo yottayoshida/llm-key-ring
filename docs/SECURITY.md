@@ -44,7 +44,6 @@ version changes Custom Keychain behavior (e.g., adding partition IDs to CSSM, de
 Custom Keychain creation APIs), Layer 2 (Authorization) could be weakened.
 
 **Mitigations**:
-- `lkr doctor` detects degradation (ACL not enforced, search list pollution)
 - `lkr harden` re-registers ACL, serving as a migration point if the mechanism changes
 - Layer 1 (Isolation via search list) is independent of ACL and provides baseline protection
 - The architecture is designed to be **migrated, not permanent** — if Apple provides a
@@ -171,7 +170,7 @@ not a gap waiting to be fixed.
 | IDE with pseudo-TTY (pty) bypasses TTY guard | Some IDEs allocate a pty; `isatty` returns true | TTY guard is defense-in-depth; use `lkr exec` as primary |
 | Child process logs env vars after `lkr exec` | LKR has no control over child behavior | Audit child programs; avoid untrusted commands |
 | Clipboard manager capturing copied keys | Third-party clipboard managers may persist history | 30s auto-clear mitigates; disable clipboard managers for sensitive use |
-| macOS deprecates Custom Keychain / CSSM format | Layer 2 (ACL) may stop working | `lkr doctor` detects; Layer 1 (isolation) is independent; see Platform Dependency Risk |
+| macOS deprecates Custom Keychain / CSSM format | Layer 2 (ACL) may stop working | Layer 1 (isolation) is independent; `lkr harden` serves as migration point; see Platform Dependency Risk |
 
 ### Keychain ACL Investigation (v0.2.1 — updated v0.3.0)
 
