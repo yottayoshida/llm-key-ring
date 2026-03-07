@@ -39,10 +39,13 @@ const KEYCHAIN_FILENAME: &str = "lkr.keychain-db";
 const AUTO_LOCK_TIMEOUT_SECS: u32 = 300;
 
 /// Resolved path to the custom keychain file.
-pub fn keychain_path() -> PathBuf {
-    dirs_next()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(KEYCHAIN_FILENAME)
+///
+/// Returns an error if the home directory cannot be resolved (e.g. `$HOME` is unset).
+/// Never falls back to the current directory — that would be a security hazard.
+pub fn keychain_path() -> Result<PathBuf> {
+    let base = dirs_next()
+        .ok_or_else(|| Error::Keychain("Cannot resolve home directory. Is $HOME set?".into()))?;
+    Ok(base.join(KEYCHAIN_FILENAME))
 }
 
 /// Return `~/Library/Keychains/` on macOS.
@@ -51,8 +54,10 @@ fn dirs_next() -> Option<PathBuf> {
 }
 
 /// Check whether the custom keychain file exists.
+///
+/// Returns `false` if the home directory cannot be resolved.
 pub fn is_initialized() -> bool {
-    keychain_path().exists()
+    keychain_path().map(|p| p.exists()).unwrap_or(false)
 }
 
 /// Create a new custom keychain with the given password.
@@ -60,7 +65,7 @@ pub fn is_initialized() -> bool {
 /// Also applies lock-on-sleep and auto-lock timeout settings,
 /// then ensures the keychain is removed from the default search list (I1/SR9).
 pub fn create(password: &str) -> Result<SecKeychain> {
-    let path = keychain_path();
+    let path = keychain_path()?;
     if path.exists() {
         return Err(Error::Keychain(
             "Custom keychain already exists. Run `lkr lock` or use existing keychain.".into(),
@@ -83,7 +88,7 @@ pub fn create(password: &str) -> Result<SecKeychain> {
 
 /// Open an existing custom keychain.
 pub fn open() -> Result<SecKeychain> {
-    let path = keychain_path();
+    let path = keychain_path()?;
     if !path.exists() {
         return Err(Error::NotInitialized);
     }
@@ -135,7 +140,7 @@ fn apply_settings(_keychain: &SecKeychain) -> Result<()> {
 
     // set_settings requires &mut, but we just created the keychain
     // so we clone the reference through a re-open
-    let mut kc = SecKeychain::open(keychain_path().as_path())
+    let mut kc = SecKeychain::open(keychain_path()?.as_path())
         .map_err(|e| Error::Keychain(format!("Failed to reopen keychain for settings: {e}")))?;
     kc.set_settings(&settings)
         .map_err(|e| Error::Keychain(format!("Failed to apply keychain settings: {e}")))?;
@@ -273,7 +278,7 @@ mod tests {
 
     #[test]
     fn test_keychain_path_ends_with_filename() {
-        let path = keychain_path();
+        let path = keychain_path().unwrap();
         assert_eq!(
             path.file_name().unwrap().to_str().unwrap(),
             KEYCHAIN_FILENAME
@@ -282,7 +287,7 @@ mod tests {
 
     #[test]
     fn test_keychain_path_is_in_keychains_dir() {
-        let path = keychain_path();
+        let path = keychain_path().unwrap();
         let parent = path.parent().unwrap();
         assert!(
             parent.ends_with("Library/Keychains"),
@@ -293,7 +298,7 @@ mod tests {
 
     #[test]
     fn test_keychain_path_is_absolute() {
-        let path = keychain_path();
+        let path = keychain_path().unwrap();
         assert!(path.is_absolute());
     }
 

@@ -5,6 +5,54 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-03-07
+
+Security hardening patch addressing code review feedback.
+
+### Fixed
+
+- **CRITICAL**: ACL fail-open → fail-closed. `build_access()` failure now returns an error instead of silently storing items without ACL protection
+- **CRITICAL**: `keychain_path()` no longer silently falls back to `"."` when `$HOME` is unset. Returns `Error::Keychain` instead
+- `-25308` (errSecInteractionNotAllowed) auto-diagnosis: when `item_ref` is available, `is_acl_blocked()` is called to distinguish ACL mismatch from keychain-locked, returning `AclMismatch` for better CLI guidance
+
+### Changed
+
+- `StoredEntry` now derives `Zeroize + ZeroizeOnDrop` — API key values are automatically zeroed from memory when the struct is dropped (previously relied on manual `Zeroizing` wrappers only at return boundaries)
+
+## [0.3.0] - 2026-03-07
+
+Custom Keychain + Legacy ACL release. Pure FFI implementation (no CLI subprocess calls).
+
+### Added
+
+- `lkr init` — Create a dedicated `lkr.keychain-db` with password, auto-lock (5 min), lock-on-sleep
+- `lkr lock` — Explicitly lock the custom keychain
+- `lkr doctor` — Diagnose keychain health (existence, lock state, search list isolation, ACL status)
+- `lkr harden` — Re-apply Legacy ACL to all keys for the current binary path
+- Custom Keychain (`lkr.keychain-db`) — isolated from login.keychain, never added to search list (I1/SR9)
+- Legacy ACL (`SecAccessCreate` + `SecTrustedApplicationCreateFromPath`) — restricts key access to the LKR binary (Layer 2 defense)
+- `disable_user_interaction` RAII guard — prevents macOS GUI dialogs during all keychain operations (SR12/I7)
+- `crates/lkr-core/src/custom_keychain.rs` — keychain lifecycle management (create, open, unlock, lock, delete)
+- `crates/lkr-core/src/acl.rs` — ACL construction and diagnostics (`build_access`, `is_acl_blocked`)
+- `crates/lkr-core/src/error.rs` — expanded error types with OS status constants
+- `crates/lkr-core/tests/keychain_integration.rs` — Tier 2 integration tests
+- `docs/design-v030.md` — full design document for v0.3.0
+- `docs/spike-report-v4.md` — CLI wrap spike report and lessons learned
+
+### Changed
+
+- **BREAKING**: All key storage now requires `lkr init` first. Keys are stored in `lkr.keychain-db` instead of login.keychain
+- `KeyManager` now manages custom keychain lifecycle (open → unlock → operate → auto-lock)
+- Password prompt uses `rpassword` with 3-retry loop
+- All keychain FFI calls go through `keychain_raw` module (Pure FFI, no `security` CLI subprocess)
+
+### Security
+
+- Custom Keychain isolation: `lkr.keychain-db` is never in the default search list — other apps cannot discover LKR keys
+- Legacy ACL: each key is bound to the LKR binary path via `SecTrustedApplicationCreateFromPath`
+- Auto-lock: keychain locks after 5 minutes of inactivity and on sleep
+- GUI dialog suppression: `SecKeychainSetUserInteractionAllowed(false)` prevents credential prompts from appearing
+
 ## [0.2.1] - 2026-03-03
 
 Documentation-only patch. Updated threat model with Keychain ACL investigation results.
@@ -78,6 +126,8 @@ Initial release. Secure CLI for managing LLM API keys via macOS Keychain.
 - Generated files written with `0600` permissions
 - `.gitignore` coverage check on generated files
 
+[0.3.1]: https://github.com/yottayoshida/llm-key-ring/compare/v0.3.0...v0.3.1
+[0.3.0]: https://github.com/yottayoshida/llm-key-ring/compare/v0.2.1...v0.3.0
 [0.2.1]: https://github.com/yottayoshida/llm-key-ring/compare/v0.2.0...v0.2.1
 [0.2.0]: https://github.com/yottayoshida/llm-key-ring/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/yottayoshida/llm-key-ring/releases/tag/v0.1.0

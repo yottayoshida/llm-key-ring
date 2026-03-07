@@ -748,10 +748,9 @@ fn cmd_gen(
 fn cmd_init() {
     if lkr_core::custom_keychain::is_initialized() {
         eprintln!("LKR keychain is already initialized.");
-        eprintln!(
-            "  Path: {}",
-            lkr_core::custom_keychain::keychain_path().display()
-        );
+        if let Ok(path) = lkr_core::custom_keychain::keychain_path() {
+            eprintln!("  Path: {}", path.display());
+        }
         return;
     }
 
@@ -795,10 +794,9 @@ fn cmd_init() {
     match lkr_core::custom_keychain::create(&password) {
         Ok(_kc) => {
             eprintln!("\nLKR keychain created successfully.");
-            eprintln!(
-                "  Path: {}",
-                lkr_core::custom_keychain::keychain_path().display()
-            );
+            if let Ok(path) = lkr_core::custom_keychain::keychain_path() {
+                eprintln!("  Path: {}", path.display());
+            }
             eprintln!("  Auto-lock: 5 minutes / on sleep");
             eprintln!("\n  Next steps:");
             eprintln!("    lkr set openai:prod       # Store a key");
