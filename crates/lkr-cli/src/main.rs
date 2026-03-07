@@ -95,11 +95,28 @@ enum Commands {
         force: bool,
     },
 
-    /// Migrate v0.1.0 keys to v0.2.0 format (adds sync protection + lock protection)
+    /// Initialize LKR secure keychain (run once after install)
+    Init,
+
+    /// Lock the LKR keychain
+    Lock,
+
+    /// Re-apply ACL to all keys (run after binary update/reinstall)
+    Harden {
+        /// Preview changes without applying
+        #[arg(long)]
+        dry_run: bool,
+    },
+
+    /// Migrate keys from login.keychain to LKR keychain
     Migrate {
         /// Preview changes without applying
         #[arg(long)]
         dry_run: bool,
+
+        /// Skip confirmation prompt
+        #[arg(long)]
+        yes: bool,
     },
 
     /// Run a command with Keychain keys injected as environment variables.
@@ -167,76 +184,197 @@ fn schedule_clipboard_clear(seconds: u32) {
         .spawn(); // Detach — orphaned child survives parent exit
 }
 
+/// Open and unlock the Custom Keychain with password retry.
+///
+/// Returns a v0.3.0 KeychainStore ready for operations.
+/// Prompts for password up to 3 times.
+fn open_and_unlock() -> lkr_core::Result<KeychainStore> {
+    if !lkr_core::custom_keychain::is_initialized() {
+        return Err(lkr_core::Error::NotInitialized);
+    }
+
+    let mut kc = lkr_core::custom_keychain::open()?;
+
+    const MAX_RETRIES: u32 = 3;
+    for attempt in 1..=MAX_RETRIES {
+        eprint!("LKR keychain password: ");
+        io::stderr().flush().ok();
+        let password = rpassword::read_password()
+            .map_err(|e| lkr_core::Error::Keychain(format!("Failed to read password: {e}")))?;
+
+        match lkr_core::custom_keychain::unlock(&mut kc, &password) {
+            Ok(()) => return Ok(KeychainStore::new_v3(kc)),
+            Err(lkr_core::Error::PasswordWrong) => {
+                if attempt < MAX_RETRIES {
+                    eprintln!(
+                        "Wrong password. ({}/{} attempts)",
+                        attempt, MAX_RETRIES
+                    );
+                } else {
+                    return Err(lkr_core::Error::PasswordWrong);
+                }
+            }
+            Err(e) => return Err(e),
+        }
+    }
+
+    Err(lkr_core::Error::PasswordWrong)
+}
+
 fn main() {
     let cli = Cli::parse();
-    let store = KeychainStore::new();
 
-    // Determine TTY status once — injected into handlers for testability.
-    // Only io::stdout().is_terminal() (isatty) is trusted; env vars like $TERM are not.
     let stdout_is_tty = io::stdout().is_terminal();
 
+    // Commands that don't need an unlocked Custom Keychain
     let result = match cli.command {
-        Commands::Set { name, kind, force } => cmd_set(&store, &name, &kind, force),
-        Commands::Get {
-            name,
-            show,
-            plain,
-            force_plain,
-        } => cmd_get(
-            &store,
-            &name,
-            show,
-            plain,
-            force_plain,
-            cli.json,
-            stdout_is_tty,
-        ),
-        Commands::List { all } => cmd_list(&store, all, cli.json),
-        Commands::Rm { name, force } => cmd_rm(&store, &name, force),
-        Commands::Usage { provider, refresh } => {
-            cmd_usage(&store, provider.as_deref(), refresh, cli.json)
+        Commands::Init => {
+            cmd_init();
+            return;
         }
-        Commands::Gen {
-            template,
-            output,
-            force,
-        } => cmd_gen(&store, &template, output.as_deref(), force, stdout_is_tty),
-        Commands::Migrate { dry_run } => cmd_migrate(&store, dry_run),
-        Commands::Exec {
-            keys,
-            verbose,
-            command,
-        } => cmd_exec(&store, &keys, &command, stdout_is_tty, verbose),
+        Commands::Lock => {
+            cmd_lock();
+            return;
+        }
+        _ => {
+            // All other commands need an unlocked store
+            let store = match open_and_unlock() {
+                Ok(s) => s,
+                Err(lkr_core::Error::NotInitialized) => {
+                    eprintln!("Error: LKR keychain is not initialized.");
+                    eprintln!("\n  Run `lkr init` to create the secure keychain.");
+                    std::process::exit(1);
+                }
+                Err(lkr_core::Error::PasswordWrong) => {
+                    eprintln!("Error: Wrong password. Maximum retries exceeded.");
+                    std::process::exit(1);
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(1);
+                }
+            };
+
+            match cli.command {
+                Commands::Set { name, kind, force } => cmd_set(&store, &name, &kind, force),
+                Commands::Get {
+                    name,
+                    show,
+                    plain,
+                    force_plain,
+                } => cmd_get(
+                    &store,
+                    &name,
+                    show,
+                    plain,
+                    force_plain,
+                    cli.json,
+                    stdout_is_tty,
+                ),
+                Commands::List { all } => cmd_list(&store, all, cli.json),
+                Commands::Rm { name, force } => cmd_rm(&store, &name, force),
+                Commands::Usage { provider, refresh } => {
+                    cmd_usage(&store, provider.as_deref(), refresh, cli.json)
+                }
+                Commands::Gen {
+                    template,
+                    output,
+                    force,
+                } => cmd_gen(&store, &template, output.as_deref(), force, stdout_is_tty),
+                Commands::Migrate { dry_run, yes } => {
+                    cmd_migrate(&store, dry_run, yes)
+                }
+                Commands::Harden { dry_run } => cmd_harden(&store, dry_run),
+                Commands::Exec {
+                    keys,
+                    verbose,
+                    command,
+                } => cmd_exec(&store, &keys, &command, stdout_is_tty, verbose),
+                Commands::Init | Commands::Lock => unreachable!(),
+            }
+        }
     };
 
     if let Err(e) = result {
-        // TTY guard violations → exit code 2 (distinct from general errors)
-        if let lkr_core::Error::TtyGuard { .. } = e {
-            eprintln!("Error: {}", e);
-            std::process::exit(2);
-        }
+        // 3-layer error messages: WHAT happened / WHY / WHAT TO DO
+        match &e {
+            lkr_core::Error::TtyGuard { .. } => {
+                eprintln!("Error: {}", e);
+                std::process::exit(2);
+            }
 
-        eprintln!("Error: {}", e);
-
-        // Suggest similar keys for KeyNotFound errors
-        if let lkr_core::Error::KeyNotFound { ref name } = e {
-            if let Ok(entries) = store.list(true) {
-                let suggestions: Vec<&str> = entries
-                    .iter()
-                    .filter(|entry| {
-                        entry.name.contains(&name[..name.len().min(4)])
-                            || entry.provider == name.split(':').next().unwrap_or("")
-                    })
-                    .map(|e| e.name.as_str())
-                    .collect();
-                if !suggestions.is_empty() {
-                    eprintln!("\n  Did you mean?");
-                    for s in suggestions {
-                        eprintln!("    {}", s);
+            lkr_core::Error::KeyNotFound { name } => {
+                eprintln!("Error: Key '{}' not found.", name);
+                // Check legacy login.keychain for migrate guidance
+                let legacy_store = KeychainStore::new();
+                if legacy_store.exists(name).unwrap_or(false) {
+                    eprintln!("  Why: The key exists in login.keychain but not in the LKR keychain.");
+                    eprintln!("  Fix: Run `lkr migrate` to move your keys.");
+                } else {
+                    eprintln!("  Fix: Run `lkr set {}` to store a new key.", name);
+                    // Suggest similar keys
+                    if let Ok(entries) = legacy_store.list(true) {
+                        let suggestions: Vec<&str> = entries
+                            .iter()
+                            .filter(|entry| {
+                                (name.len() >= 4
+                                    && entry.name.contains(&name[..name.len().min(4)]))
+                                    || entry.provider
+                                        == name.split(':').next().unwrap_or("")
+                            })
+                            .map(|e| e.name.as_str())
+                            .collect();
+                        if !suggestions.is_empty() {
+                            eprintln!("  Did you mean?");
+                            for s in suggestions {
+                                eprintln!("    {}", s);
+                            }
+                        }
                     }
                 }
             }
-            eprintln!("\n  Run `lkr list` to see all stored keys.");
+
+            lkr_core::Error::KeyAlreadyExists { name } => {
+                eprintln!("Error: Key '{}' already exists.", name);
+                eprintln!("  Fix: Use `lkr set {} --force` to overwrite.", name);
+            }
+
+            lkr_core::Error::KeychainLocked => {
+                eprintln!("Error: LKR keychain is locked.");
+                eprintln!("  Why: The keychain auto-locks after 5 minutes or on sleep.");
+                eprintln!("  Fix: Re-run the command — you'll be prompted for the password.");
+            }
+
+            lkr_core::Error::InteractionNotAllowed => {
+                eprintln!("Error: Access denied to keychain item.");
+                eprintln!("  Why: The binary fingerprint may have changed (e.g. after update or reinstall).");
+                eprintln!("  Fix: Run `lkr harden` to re-apply access control for the current binary.");
+            }
+
+            lkr_core::Error::AclMismatch => {
+                eprintln!("Error: Access denied — binary fingerprint has changed.");
+                eprintln!("  Why: LKR was updated or reinstalled, and the access control no longer matches.");
+                eprintln!("  Fix: Run `lkr harden` to refresh access control.");
+            }
+
+            lkr_core::Error::NotInitialized => {
+                eprintln!("Error: LKR keychain is not initialized.");
+                eprintln!("  Fix: Run `lkr init` to create the secure keychain.");
+            }
+
+            lkr_core::Error::PasswordWrong => {
+                eprintln!("Error: Wrong keychain password.");
+                eprintln!("  Fix: Try again with the correct password.");
+            }
+
+            lkr_core::Error::EmptyValue => {
+                eprintln!("Error: Empty value is not allowed.");
+                eprintln!("  Fix: Provide a non-empty API key value.");
+            }
+
+            _ => {
+                eprintln!("Error: {}", e);
+            }
         }
 
         std::process::exit(1);
@@ -605,41 +743,240 @@ fn cmd_gen(
     Ok(())
 }
 
-fn cmd_migrate(store: &KeychainStore, dry_run: bool) -> lkr_core::Result<()> {
-    let result = store.migrate(dry_run)?;
+/// Initialize the LKR secure keychain.
+fn cmd_init() {
+    if lkr_core::custom_keychain::is_initialized() {
+        eprintln!("LKR keychain is already initialized.");
+        eprintln!("  Path: {}", lkr_core::custom_keychain::keychain_path().display());
+        return;
+    }
 
-    if result.keys.is_empty() {
-        eprintln!("No keys to migrate.");
+    eprintln!("Creating LKR secure keychain...");
+    eprintln!("  This password protects your API keys at rest.\n");
+
+    // Password with confirmation
+    let password = loop {
+        eprint!("Set keychain password: ");
+        io::stderr().flush().ok();
+        let pw1 = match rpassword::read_password() {
+            Ok(p) if !p.is_empty() => p,
+            Ok(_) => {
+                eprintln!("Password cannot be empty.");
+                continue;
+            }
+            Err(e) => {
+                eprintln!("Error: Failed to read password: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        eprint!("Confirm password: ");
+        io::stderr().flush().ok();
+        let pw2 = match rpassword::read_password() {
+            Ok(p) => p,
+            Err(e) => {
+                eprintln!("Error: Failed to read password: {}", e);
+                std::process::exit(1);
+            }
+        };
+
+        if pw1 != pw2 {
+            eprintln!("Passwords do not match. Try again.\n");
+            continue;
+        }
+
+        break pw1;
+    };
+
+    match lkr_core::custom_keychain::create(&password) {
+        Ok(_kc) => {
+            eprintln!("\nLKR keychain created successfully.");
+            eprintln!("  Path: {}", lkr_core::custom_keychain::keychain_path().display());
+            eprintln!("  Auto-lock: 5 minutes / on sleep");
+            eprintln!("\n  Next steps:");
+            eprintln!("    lkr set openai:prod       # Store a key");
+            eprintln!("    lkr migrate                # Move keys from login.keychain");
+        }
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Lock the LKR keychain.
+fn cmd_lock() {
+    if !lkr_core::custom_keychain::is_initialized() {
+        eprintln!("Error: LKR keychain is not initialized.");
+        eprintln!("\n  Run `lkr init` to create the secure keychain.");
+        std::process::exit(1);
+    }
+
+    match lkr_core::custom_keychain::open() {
+        Ok(kc) => match lkr_core::custom_keychain::lock(&kc) {
+            Ok(()) => eprintln!("LKR keychain locked."),
+            Err(e) => {
+                eprintln!("Error: {}", e);
+                std::process::exit(1);
+            }
+        },
+        Err(e) => {
+            eprintln!("Error: {}", e);
+            std::process::exit(1);
+        }
+    }
+}
+
+/// Re-apply ACL to all keys (after binary update/reinstall).
+fn cmd_harden(store: &KeychainStore, dry_run: bool) -> lkr_core::Result<()> {
+    let binary_path = lkr_core::acl::current_binary_path()?;
+    eprintln!("Binary path: {}", binary_path.display());
+
+    let entries = store.list(true)?;
+    if entries.is_empty() {
+        eprintln!("No keys to harden.");
         return Ok(());
     }
 
     if dry_run {
-        eprintln!("  Would migrate {} key(s):", result.keys.len());
-        for key in &result.keys {
-            eprintln!(
-                "    {} ({}) — add sync protection + lock protection",
-                key.name, key.kind
-            );
+        eprintln!("  Would re-apply ACL to {} key(s):", entries.len());
+        for entry in &entries {
+            eprintln!("    {} ({})", entry.name, entry.kind);
         }
-        eprintln!("\n  Run `lkr migrate` (without --dry-run) to apply.");
-    } else {
-        for key in &result.keys {
-            if key.success {
-                eprintln!("    {} ({}) — migrated", key.name, key.kind);
-            } else {
-                eprintln!(
-                    "    {} ({}) — FAILED: {}",
-                    key.name,
-                    key.kind,
-                    key.error.as_deref().unwrap_or("unknown error")
-                );
+        eprintln!("\n  Run `lkr harden` (without --dry-run) to apply.");
+        return Ok(());
+    }
+
+    // Harden: delete + re-create with fresh ACL for each key
+    let mut success_count = 0;
+    let mut fail_count = 0;
+
+    for entry in &entries {
+        // Read current value
+        let (value, kind) = match store.get(&entry.name) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("    {} — FAILED to read: {}", entry.name, e);
+                fail_count += 1;
+                continue;
+            }
+        };
+
+        // Delete + re-create with force (which triggers CreateFromContent with fresh ACL)
+        match store.set(&entry.name, &value, kind, true) {
+            Ok(()) => {
+                eprintln!("    {} — hardened", entry.name);
+                success_count += 1;
+            }
+            Err(e) => {
+                eprintln!("    {} — FAILED: {}", entry.name, e);
+                fail_count += 1;
             }
         }
+    }
+
+    eprintln!(
+        "\n  Result: {} hardened, {} failed",
+        success_count, fail_count
+    );
+    Ok(())
+}
+
+/// Migrate keys from login.keychain to LKR custom keychain (v0.3.0).
+fn cmd_migrate(store: &KeychainStore, dry_run: bool, yes: bool) -> lkr_core::Result<()> {
+    // Read keys from legacy login.keychain
+    let legacy_store = KeychainStore::new();
+    let legacy_entries = legacy_store.list(true)?;
+
+    if legacy_entries.is_empty() {
+        eprintln!("No keys found in login.keychain to migrate.");
+        return Ok(());
+    }
+
+    // Check which keys already exist in Custom Keychain (skip those)
+    let mut to_migrate = Vec::new();
+    for entry in &legacy_entries {
+        if store.exists(&entry.name).unwrap_or(false) {
+            eprintln!("    {} — already in LKR keychain (skip)", entry.name);
+        } else {
+            to_migrate.push(entry);
+        }
+    }
+
+    if to_migrate.is_empty() {
+        eprintln!("All keys already migrated.");
+        return Ok(());
+    }
+
+    if dry_run {
+        eprintln!("  Would migrate {} key(s):", to_migrate.len());
+        for entry in &to_migrate {
+            eprintln!("    {} ({})", entry.name, entry.kind);
+        }
+        eprintln!("\n  Run `lkr migrate` (without --dry-run) to apply.");
+        return Ok(());
+    }
+
+    // Confirmation
+    if !yes {
+        eprintln!("  Will migrate {} key(s) to LKR keychain:", to_migrate.len());
+        for entry in &to_migrate {
+            eprintln!("    {} ({})", entry.name, entry.kind);
+        }
+        if !confirm("\n  Proceed? [y/N] ") {
+            eprintln!("Cancelled.");
+            return Ok(());
+        }
+    }
+
+    // Copy-first migration (SR6): read from legacy → write to custom → verify
+    let mut success_count = 0;
+    let mut fail_count = 0;
+
+    for entry in &to_migrate {
+        // Step 1: Read from legacy
+        let (value, kind) = match legacy_store.get(&entry.name) {
+            Ok(v) => v,
+            Err(e) => {
+                eprintln!("    {} — FAILED to read: {}", entry.name, e);
+                fail_count += 1;
+                continue;
+            }
+        };
+
+        // Step 2: Write to Custom Keychain (with ACL)
+        if let Err(e) = store.set(&entry.name, &value, kind, false) {
+            eprintln!("    {} — FAILED to write: {}", entry.name, e);
+            fail_count += 1;
+            continue;
+        }
+
+        // Step 3: Verify read-back
+        match store.get(&entry.name) {
+            Ok((readback, _)) if *readback == *value => {
+                eprintln!("    {} ({}) — migrated", entry.name, kind);
+                success_count += 1;
+            }
+            Ok(_) => {
+                eprintln!("    {} — FAILED: verification mismatch", entry.name);
+                fail_count += 1;
+            }
+            Err(e) => {
+                eprintln!("    {} — FAILED to verify: {}", entry.name, e);
+                fail_count += 1;
+            }
+        }
+    }
+
+    eprintln!(
+        "\n  Result: {} migrated, {} failed",
+        success_count, fail_count
+    );
+
+    if success_count > 0 {
         eprintln!(
-            "\n  Result: {} migrated, {} failed",
-            result.migrated_count(),
-            result.failed_count()
-        );
+            "\n  Legacy keys are still in login.keychain. You can remove them with:");
+        eprintln!("    security delete-generic-password -s com.llm-key-ring -a <name>");
     }
 
     Ok(())

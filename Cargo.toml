@@ -22,3 +22,4 @@ zeroize = { version = "1", features = ["derive"] }
 security-framework = "3"
 core-foundation = "0.10"
 security-framework-sys = "2"
+home = "0.5"

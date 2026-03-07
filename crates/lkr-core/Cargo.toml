@@ -27,3 +27,4 @@ zeroize = { workspace = true }
 security-framework = { workspace = true }
 core-foundation = { workspace = true }
 security-framework-sys = { workspace = true }
+home = { workspace = true }

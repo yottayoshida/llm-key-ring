@@ -1,3 +1,5 @@
+pub mod acl;
+pub mod custom_keychain;
 pub mod error;
 pub mod keymanager;
 pub mod template;

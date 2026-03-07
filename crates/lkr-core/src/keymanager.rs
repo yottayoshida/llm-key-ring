@@ -185,6 +185,52 @@ mod keychain_raw {
     unsafe extern "C" {
         static kSecAttrAccessible: *const c_void;
         static kSecAttrAccessibleWhenUnlocked: *const c_void;
+        static kSecMatchSearchList: *const c_void;
+    }
+
+    // v0.3.0: Legacy Keychain API for CreateFromContent + FindGenericPassword
+    unsafe extern "C" {
+        fn SecKeychainItemCreateFromContent(
+            item_class: u32,
+            attr_list: *mut SecKeychainAttributeList,
+            length: u32,
+            data: *const c_void,
+            keychain_ref: *const c_void,
+            initial_access: *const c_void,
+            item_ref_out: *mut *mut c_void,
+        ) -> i32;
+
+        fn SecKeychainFindGenericPassword(
+            keychain_or_array: *const c_void,
+            service_name_length: u32,
+            service_name: *const u8,
+            account_name_length: u32,
+            account_name: *const u8,
+            password_length: *mut u32,
+            password_data: *mut *mut c_void,
+            item_ref: *mut *mut c_void,
+        ) -> i32;
+
+        fn SecKeychainItemFreeContent(
+            attr_list: *const c_void,
+            data: *const c_void,
+        ) -> i32;
+
+        fn SecKeychainItemDelete(item_ref: *const c_void) -> i32;
+    }
+
+    // v0.3.0: CSSM attribute structures for SecKeychainItemCreateFromContent
+    #[repr(C)]
+    struct SecKeychainAttribute {
+        tag: u32,
+        length: u32,
+        data: *mut c_void,
+    }
+
+    #[repr(C)]
+    struct SecKeychainAttributeList {
+        count: u32,
+        attr: *mut SecKeychainAttribute,
     }
 
     fn new_dict() -> *mut c_void {
@@ -211,14 +257,27 @@ mod keychain_raw {
     }
 
     fn os_status_to_error(status: i32, account: &str) -> Error {
+        use crate::error::os_status::*;
         match status {
-            -25300 => Error::KeyNotFound {
+            ERR_SEC_ITEM_NOT_FOUND => Error::KeyNotFound {
                 name: account.to_string(),
             },
-            -25299 => Error::KeyAlreadyExists {
+            ERR_SEC_DUPLICATE_ITEM => Error::KeyAlreadyExists {
                 name: account.to_string(),
             },
-            -25293 | -25308 => Error::KeychainLocked,
+            ERR_SEC_AUTH_FAILED => Error::PasswordWrong,
+            ERR_SEC_INTERACTION_NOT_ALLOWED => Error::InteractionNotAllowed,
+            ERR_SEC_NO_SUCH_KEYCHAIN => Error::NotInitialized,
+            ERR_SEC_INVALID_KEYCHAIN => Error::Keychain(
+                "Keychain file is corrupted or invalid. Try `lkr init` after removing the old file."
+                    .into(),
+            ),
+            ERR_SEC_DECODE_ERROR => Error::Keychain(
+                "Failed to decode keychain data. The keychain file may be corrupted.".into(),
+            ),
+            ERR_SEC_USER_CANCELED => Error::Keychain(
+                "Operation was canceled. This may indicate a GUI dialog was suppressed.".into(),
+            ),
             _ => Error::Keychain(format!("Keychain error: OSStatus {status}")),
         }
     }
@@ -344,6 +403,310 @@ mod keychain_raw {
         }
         Ok(())
     }
+
+    // =====================================================================
+    // v0.3.0: Custom Keychain operations (with ACL)
+    // =====================================================================
+
+    /// Store a password in Custom Keychain with initial ACL (SR2/SR4).
+    ///
+    /// Uses `SecKeychainItemCreateFromContent` to set the SecAccess at
+    /// creation time, avoiding the GUI dialog issue with `SecKeychainItemSetAccess`.
+    ///
+    /// # Arguments
+    /// * `keychain` — unlocked Custom Keychain reference
+    /// * `access` — SecAccessRef built by `acl::build_access()`; may be null to skip ACL
+    /// * `service` — service name (e.g. "com.llm-key-ring")
+    /// * `account` — account name (e.g. "openai:prod")
+    /// * `password` — secret value bytes
+    pub(super) fn set_v3(
+        keychain: &security_framework::os::macos::keychain::SecKeychain,
+        access: *const c_void,
+        service: &str,
+        account: &str,
+        password: &[u8],
+    ) -> Result<()> {
+        use core_foundation::base::TCFType;
+        use security_framework::os::macos::keychain::SecKeychain;
+
+        let _guard = SecKeychain::disable_user_interaction()
+            .map_err(|e| Error::Keychain(format!("Failed to disable user interaction: {e}")))?;
+
+        let svc_bytes = service.as_bytes();
+        let acct_bytes = account.as_bytes();
+
+        let mut attrs = [
+            SecKeychainAttribute {
+                tag: u32::from_be_bytes(*b"svce"), // kSecServiceItemAttr
+                length: svc_bytes.len() as u32,
+                data: svc_bytes.as_ptr() as *mut c_void,
+            },
+            SecKeychainAttribute {
+                tag: u32::from_be_bytes(*b"acct"), // kSecAccountItemAttr
+                length: acct_bytes.len() as u32,
+                data: acct_bytes.as_ptr() as *mut c_void,
+            },
+        ];
+
+        let mut attr_list = SecKeychainAttributeList {
+            count: 2,
+            attr: attrs.as_mut_ptr(),
+        };
+
+        let item_class: u32 = u32::from_be_bytes(*b"genp"); // kSecGenericPasswordItemClass
+
+        let mut item_ref: *mut c_void = std::ptr::null_mut();
+        let status = unsafe {
+            SecKeychainItemCreateFromContent(
+                item_class,
+                &mut attr_list,
+                password.len() as u32,
+                password.as_ptr() as _,
+                keychain.as_concrete_TypeRef() as _,
+                access,
+                &mut item_ref,
+            )
+        };
+
+        // Release the item ref if returned (we don't need it)
+        if !item_ref.is_null() {
+            unsafe { CFRelease(item_ref as _) };
+        }
+
+        if status != 0 {
+            return Err(os_status_to_error(status, account));
+        }
+
+        Ok(())
+    }
+
+    /// Retrieve password bytes from Custom Keychain (v0.3.0).
+    ///
+    /// Uses `SecKeychainFindGenericPassword` scoped to the given keychain.
+    /// Returns the raw bytes and optionally the item ref (for ACL diagnosis).
+    pub(super) fn get_v3(
+        keychain: &security_framework::os::macos::keychain::SecKeychain,
+        service: &str,
+        account: &str,
+    ) -> Result<Vec<u8>> {
+        use core_foundation::base::TCFType;
+        use security_framework::os::macos::keychain::SecKeychain;
+
+        let _guard = SecKeychain::disable_user_interaction()
+            .map_err(|e| Error::Keychain(format!("Failed to disable user interaction: {e}")))?;
+
+        let svc_bytes = service.as_bytes();
+        let acct_bytes = account.as_bytes();
+
+        let mut pw_length: u32 = 0;
+        let mut pw_data: *mut c_void = std::ptr::null_mut();
+        let mut item_ref: *mut c_void = std::ptr::null_mut();
+
+        let status = unsafe {
+            SecKeychainFindGenericPassword(
+                keychain.as_concrete_TypeRef() as _,
+                svc_bytes.len() as u32,
+                svc_bytes.as_ptr(),
+                acct_bytes.len() as u32,
+                acct_bytes.as_ptr(),
+                &mut pw_length,
+                &mut pw_data,
+                &mut item_ref,
+            )
+        };
+
+        // Release the item ref (not needed for basic get)
+        if !item_ref.is_null() {
+            unsafe { CFRelease(item_ref as _) };
+        }
+
+        if status != 0 {
+            return Err(os_status_to_error(status, account));
+        }
+
+        if pw_data.is_null() {
+            return Err(Error::Keychain(
+                "SecKeychainFindGenericPassword returned null data".into(),
+            ));
+        }
+
+        // Copy data out before freeing
+        let bytes =
+            unsafe { std::slice::from_raw_parts(pw_data as *const u8, pw_length as usize) }
+                .to_vec();
+
+        // Free the password data allocated by Security.framework
+        unsafe {
+            SecKeychainItemFreeContent(std::ptr::null(), pw_data);
+        }
+
+        Ok(bytes)
+    }
+
+    /// Delete a key from Custom Keychain (v0.3.0).
+    ///
+    /// Finds the item via `SecKeychainFindGenericPassword`, then deletes it
+    /// via `SecKeychainItemDelete`.
+    pub(super) fn delete_v3(
+        keychain: &security_framework::os::macos::keychain::SecKeychain,
+        service: &str,
+        account: &str,
+    ) -> Result<()> {
+        use core_foundation::base::TCFType;
+        use security_framework::os::macos::keychain::SecKeychain;
+
+        let _guard = SecKeychain::disable_user_interaction()
+            .map_err(|e| Error::Keychain(format!("Failed to disable user interaction: {e}")))?;
+
+        let svc_bytes = service.as_bytes();
+        let acct_bytes = account.as_bytes();
+
+        let mut item_ref: *mut c_void = std::ptr::null_mut();
+
+        let find_status = unsafe {
+            SecKeychainFindGenericPassword(
+                keychain.as_concrete_TypeRef() as _,
+                svc_bytes.len() as u32,
+                svc_bytes.as_ptr(),
+                acct_bytes.len() as u32,
+                acct_bytes.as_ptr(),
+                std::ptr::null_mut(), // don't need password data
+                std::ptr::null_mut(),
+                &mut item_ref,
+            )
+        };
+
+        if find_status != 0 {
+            return Err(os_status_to_error(find_status, account));
+        }
+
+        if item_ref.is_null() {
+            return Err(Error::KeyNotFound {
+                name: account.to_string(),
+            });
+        }
+
+        let delete_status = unsafe { SecKeychainItemDelete(item_ref) };
+        unsafe { CFRelease(item_ref as _) };
+
+        if delete_status != 0 {
+            return Err(os_status_to_error(delete_status, account));
+        }
+
+        Ok(())
+    }
+
+    /// List all items in Custom Keychain (v0.3.0).
+    ///
+    /// Uses `SecItemCopyMatching` with `kSecMatchSearchList` to scope
+    /// the search to the Custom Keychain only.
+    pub(super) fn list_v3(
+        keychain: &security_framework::os::macos::keychain::SecKeychain,
+        service: &str,
+    ) -> Result<Vec<String>> {
+        use core_foundation::base::TCFType;
+        use core_foundation::boolean::CFBoolean;
+        use security_framework::os::macos::keychain::SecKeychain;
+
+        let _guard = SecKeychain::disable_user_interaction()
+            .map_err(|e| Error::Keychain(format!("Failed to disable user interaction: {e}")))?;
+
+        // Build CFArray with single keychain for kSecMatchSearchList
+        unsafe extern "C" {
+            fn CFArrayCreateMutable(
+                allocator: *const c_void,
+                capacity: isize,
+                callbacks: *const c_void,
+            ) -> *mut c_void;
+            fn CFArrayAppendValue(array: *mut c_void, value: *const c_void);
+            static kCFTypeArrayCallBacks: c_void;
+        }
+
+        // Also need kSecReturnAttributes and kSecMatchLimit
+        #[link(name = "Security", kind = "framework")]
+        unsafe extern "C" {
+            static kSecReturnAttributes: *const c_void;
+            static kSecMatchLimit: *const c_void;
+            static kSecMatchLimitAll: *const c_void;
+        }
+
+        let dict = new_dict();
+        let svc = CFString::new(service);
+
+        unsafe {
+            CFDictionarySetValue(dict, kSecClass as _, kSecClassGenericPassword as _);
+            CFDictionarySetValue(dict, kSecAttrService as _, svc.as_concrete_TypeRef() as _);
+            CFDictionarySetValue(
+                dict,
+                kSecReturnAttributes as _,
+                CFBoolean::true_value().as_CFTypeRef(),
+            );
+            CFDictionarySetValue(dict, kSecMatchLimit as _, kSecMatchLimitAll as _);
+
+            // Scope to Custom Keychain only
+            let kc_array = CFArrayCreateMutable(
+                std::ptr::null(),
+                1,
+                &kCFTypeArrayCallBacks as *const c_void,
+            );
+            CFArrayAppendValue(kc_array, keychain.as_concrete_TypeRef() as _);
+            CFDictionarySetValue(dict, kSecMatchSearchList as _, kc_array as _);
+
+            let mut result: *const c_void = ptr::null();
+            let status = SecItemCopyMatching(dict as _, &mut result as *mut _ as *mut _);
+            CFRelease(dict as _);
+            CFRelease(kc_array as _);
+
+            if status == -25300 {
+                // errSecItemNotFound — no items
+                return Ok(vec![]);
+            }
+            if status != 0 {
+                return Err(os_status_to_error(status, ""));
+            }
+            if result.is_null() {
+                return Ok(vec![]);
+            }
+
+            // Result is a CFArray of CFDictionaries
+            unsafe extern "C" {
+                fn CFArrayGetCount(array: *const c_void) -> isize;
+                fn CFArrayGetValueAtIndex(array: *const c_void, idx: isize) -> *const c_void;
+                fn CFDictionaryGetValue(
+                    dict: *const c_void,
+                    key: *const c_void,
+                ) -> *const c_void;
+                fn CFStringGetCStringPtr(
+                    string: *const c_void,
+                    encoding: u32,
+                ) -> *const i8;
+            }
+
+            let count = CFArrayGetCount(result);
+            let mut accounts = Vec::new();
+
+            for i in 0..count {
+                let item_dict = CFArrayGetValueAtIndex(result, i);
+                let acct_ref = CFDictionaryGetValue(item_dict, kSecAttrAccount as _);
+                if !acct_ref.is_null() {
+                    // Try fast path: CFStringGetCStringPtr
+                    let cstr = CFStringGetCStringPtr(acct_ref, 0x0800_0100); // UTF-8
+                    if !cstr.is_null() {
+                        if let Ok(s) = std::ffi::CStr::from_ptr(cstr).to_str() {
+                            accounts.push(s.to_string());
+                        }
+                    } else {
+                        // Fallback: wrap as CFString
+                        let cf_str = CFString::wrap_under_get_rule(acct_ref as _);
+                        accounts.push(cf_str.to_string());
+                    }
+                }
+            }
+
+            CFRelease(result);
+            Ok(accounts)
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -352,13 +715,42 @@ mod keychain_raw {
 
 pub struct KeychainStore {
     service: String,
+    /// v0.3.0: Custom Keychain (Some = v0.3.0 mode, None = legacy mode for migrate)
+    custom_keychain: Option<security_framework::os::macos::keychain::SecKeychain>,
 }
 
 impl KeychainStore {
+    /// Create a legacy-mode store (v0.2.x compat, for migrate reads).
     pub fn new() -> Self {
         Self {
             service: SERVICE_NAME.to_string(),
+            custom_keychain: None,
         }
+    }
+
+    /// Create a v0.3.0 store backed by the Custom Keychain.
+    ///
+    /// The keychain must already be opened (and ideally unlocked).
+    /// Use `custom_keychain::open()` + `custom_keychain::unlock()` first.
+    pub fn new_v3(
+        keychain: security_framework::os::macos::keychain::SecKeychain,
+    ) -> Self {
+        Self {
+            service: SERVICE_NAME.to_string(),
+            custom_keychain: Some(keychain),
+        }
+    }
+
+    /// Check if this store is in v0.3.0 mode (Custom Keychain).
+    pub fn is_v3(&self) -> bool {
+        self.custom_keychain.is_some()
+    }
+
+    /// Get a reference to the custom keychain, or error if in legacy mode.
+    fn require_custom_keychain(
+        &self,
+    ) -> Result<&security_framework::os::macos::keychain::SecKeychain> {
+        self.custom_keychain.as_ref().ok_or(Error::NotInitialized)
     }
 
     /// Extract the account name (kSecAttrAccount) from a CFDictionary.
@@ -368,6 +760,11 @@ impl KeychainStore {
         let account_ref = dict.find(account_key.as_CFTypeRef())?;
         let account = unsafe { CFString::wrap_under_get_rule(*account_ref as _) }.to_string();
         Some(account)
+    }
+
+    /// Check if a key exists in legacy login.keychain (for migrate detection).
+    fn legacy_exists(&self, name: &str) -> bool {
+        keychain_raw::get(&self.service, name).is_ok()
     }
 }
 
@@ -470,11 +867,6 @@ impl KeyStore for KeychainStore {
             });
         }
 
-        // force=true: delete existing before re-adding with new attributes
-        if exists {
-            keychain_raw::delete(&self.service, name)?;
-        }
-
         let mut stored = StoredEntry {
             value: value.to_string(),
             kind,
@@ -483,19 +875,65 @@ impl KeyStore for KeychainStore {
             serde_json::to_string(&stored)
                 .map_err(|e| Error::Keychain(format!("Failed to serialize: {}", e)))?,
         );
-
-        // Zeroize the intermediate copy now that it's been serialized
         stored.value.zeroize();
 
-        keychain_raw::set(&self.service, name, json.as_bytes())?;
+        if let Some(kc) = &self.custom_keychain {
+            // v0.3.0: Custom Keychain + ACL
+            if exists {
+                keychain_raw::delete_v3(kc, &self.service, name)?;
+            }
 
-        // json (Zeroizing<String>) is zeroized on drop here
+            // Build ACL (best-effort: if binary path resolution fails, store without ACL)
+            let access = crate::acl::current_binary_path()
+                .and_then(|p| crate::acl::build_access(&p))
+                .unwrap_or(std::ptr::null_mut());
+
+            let result = keychain_raw::set_v3(kc, access, &self.service, name, json.as_bytes());
+
+            // Release the access ref if we created one
+            if !access.is_null() {
+                unsafe {
+                    unsafe extern "C" {
+                        fn CFRelease(cf: *const c_void);
+                    }
+                    CFRelease(access as _);
+                }
+            }
+
+            result?;
+        } else {
+            // Legacy mode (v0.2.x)
+            if exists {
+                keychain_raw::delete(&self.service, name)?;
+            }
+            keychain_raw::set(&self.service, name, json.as_bytes())?;
+        }
+
         Ok(())
     }
 
     fn get(&self, name: &str) -> Result<(Zeroizing<String>, KeyKind)> {
         validate_name(name)?;
-        let bytes = keychain_raw::get(&self.service, name)?;
+
+        let bytes = if let Some(kc) = &self.custom_keychain {
+            // v0.3.0: Try Custom Keychain first
+            match keychain_raw::get_v3(kc, &self.service, name) {
+                Ok(b) => b,
+                Err(Error::KeyNotFound { .. }) if self.legacy_exists(name) => {
+                    // Key exists in login.keychain but not in Custom Keychain
+                    return Err(Error::Keychain(format!(
+                        "Key '{}' found in login.keychain but not in lkr.keychain-db. \
+                         Run `lkr migrate` to move your keys.",
+                        name
+                    )));
+                }
+                Err(e) => return Err(e),
+            }
+        } else {
+            // Legacy mode
+            keychain_raw::get(&self.service, name)?
+        };
+
         let json = Zeroizing::new(
             String::from_utf8(bytes)
                 .map_err(|e| Error::Keychain(format!("Invalid UTF-8 in Keychain: {}", e)))?,
@@ -509,50 +947,77 @@ impl KeyStore for KeychainStore {
 
     fn delete(&self, name: &str) -> Result<()> {
         validate_name(name)?;
-        keychain_raw::delete(&self.service, name)
+        if let Some(kc) = &self.custom_keychain {
+            keychain_raw::delete_v3(kc, &self.service, name)
+        } else {
+            keychain_raw::delete(&self.service, name)
+        }
     }
 
     fn list(&self, include_admin: bool) -> Result<Vec<KeyEntry>> {
-        // Step 1: Enumerate account names via security-framework
-        // CloudSync::MatchSyncAny ensures both v0.1.0 keys (no sync attr)
-        // and v0.2.0 keys (sync=false) are found.
-        let results = ItemSearchOptions::new()
-            .class(ItemClass::generic_password())
-            .service(&self.service)
-            .cloud_sync(CloudSync::MatchSyncAny)
-            .load_attributes(true)
-            .limit(Limit::All)
-            .search();
-
-        let results = match results {
-            Ok(r) => r,
-            Err(e) if e.code() == -25300 => return Ok(vec![]), // errSecItemNotFound
-            Err(e) => return Err(Error::Keychain(format!("Keychain search failed: {}", e))),
-        };
-
-        // Step 2: For each account, read full data via direct Keychain API
-        let mut entries = Vec::new();
-        for result in results {
-            if let SearchResult::Dict(dict) = result
-                && let Some(account) = Self::extract_account(&dict)
-                && let Ok((value, kind)) = self.get(&account)
-            {
-                if !include_admin && kind == KeyKind::Admin {
-                    continue;
-                }
-                if let Ok((provider, label)) = validate_name(&account) {
-                    entries.push(KeyEntry {
-                        name: account,
-                        provider,
-                        label,
-                        kind,
-                        masked_value: mask_value(&value),
-                    });
+        if let Some(kc) = &self.custom_keychain {
+            // v0.3.0: List from Custom Keychain via kSecMatchSearchList
+            let accounts = keychain_raw::list_v3(kc, &self.service)?;
+            let mut entries = Vec::new();
+            for account in accounts {
+                if let Ok((value, kind)) = self.get(&account) {
+                    if !include_admin && kind == KeyKind::Admin {
+                        continue;
+                    }
+                    if let Ok((provider, label)) = validate_name(&account) {
+                        entries.push(KeyEntry {
+                            name: account,
+                            provider,
+                            label,
+                            kind,
+                            masked_value: mask_value(&value),
+                        });
+                    }
                 }
             }
+            entries.sort_by(|a, b| a.name.cmp(&b.name));
+            Ok(entries)
+        } else {
+            // Legacy mode: search via ItemSearchOptions (v0.2.x)
+            let results = ItemSearchOptions::new()
+                .class(ItemClass::generic_password())
+                .service(&self.service)
+                .cloud_sync(CloudSync::MatchSyncAny)
+                .load_attributes(true)
+                .limit(Limit::All)
+                .search();
+
+            let results = match results {
+                Ok(r) => r,
+                Err(e) if e.code() == -25300 => return Ok(vec![]),
+                Err(e) => {
+                    return Err(Error::Keychain(format!("Keychain search failed: {}", e)))
+                }
+            };
+
+            let mut entries = Vec::new();
+            for result in results {
+                if let SearchResult::Dict(dict) = result
+                    && let Some(account) = Self::extract_account(&dict)
+                    && let Ok((value, kind)) = self.get(&account)
+                {
+                    if !include_admin && kind == KeyKind::Admin {
+                        continue;
+                    }
+                    if let Ok((provider, label)) = validate_name(&account) {
+                        entries.push(KeyEntry {
+                            name: account,
+                            provider,
+                            label,
+                            kind,
+                            masked_value: mask_value(&value),
+                        });
+                    }
+                }
+            }
+            entries.sort_by(|a, b| a.name.cmp(&b.name));
+            Ok(entries)
         }
-        entries.sort_by(|a, b| a.name.cmp(&b.name));
-        Ok(entries)
     }
 
     fn exists(&self, name: &str) -> Result<bool> {

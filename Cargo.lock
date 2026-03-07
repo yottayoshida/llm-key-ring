@@ -553,6 +553,15 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "2304e00983f87ffb38b55b444b5e3b60a884b5d30c0fca7d82fe33449bbe55ea"
 
 [[package]]
+name = "home"
+version = "0.5.12"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cc627f471c528ff0c4a49e1d5e60450c8f6461dd6d10ba9dcd3a61d3dff7728d"
+dependencies = [
+ "windows-sys 0.61.2",
+]
+
+[[package]]
 name = "http"
 version = "1.4.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -893,7 +902,7 @@ checksum = "6373607a59f0be73a39b6fe456b8192fcc3585f602af20751600e974dd455e77"
 
 [[package]]
 name = "lkr-cli"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "arboard",
  "clap",
@@ -906,10 +915,11 @@ dependencies = [
 
 [[package]]
 name = "lkr-core"
-version = "0.2.1"
+version = "0.2.2"
 dependencies = [
  "chrono",
  "core-foundation 0.10.1",
+ "home",
  "reqwest",
  "security-framework",
  "security-framework-sys",
