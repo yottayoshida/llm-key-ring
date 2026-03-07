@@ -858,7 +858,7 @@ impl KeyStore for KeychainStore {
             });
         }
 
-        let mut stored = StoredEntry {
+        let stored = StoredEntry {
             value: value.to_string(),
             kind,
         };
@@ -866,17 +866,15 @@ impl KeyStore for KeychainStore {
             serde_json::to_string(&stored)
                 .map_err(|e| Error::Keychain(format!("Failed to serialize: {}", e)))?,
         );
-        stored.value.zeroize();
-
         if let Some(kc) = &self.custom_keychain {
             // v0.3.0: Custom Keychain + ACL
+            // Build ACL first (fail-closed): if this fails, the old key remains intact
+            let access =
+                crate::acl::current_binary_path().and_then(|p| crate::acl::build_access(&p))?;
+
             if exists {
                 keychain_raw::delete_v3(kc, &self.service, name)?;
             }
-
-            // Build ACL (fail-closed: if binary path resolution fails, refuse to store)
-            let access =
-                crate::acl::current_binary_path().and_then(|p| crate::acl::build_access(&p))?;
 
             let result = keychain_raw::set_v3(kc, access, &self.service, name, json.as_bytes());
 

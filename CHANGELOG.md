@@ -14,10 +14,11 @@ Security hardening patch addressing code review feedback.
 - **CRITICAL**: ACL fail-open → fail-closed. `build_access()` failure now returns an error instead of silently storing items without ACL protection
 - **CRITICAL**: `keychain_path()` no longer silently falls back to `"."` when `$HOME` is unset. Returns `Error::Keychain` instead
 - `-25308` (errSecInteractionNotAllowed) auto-diagnosis: when `item_ref` is available, `is_acl_blocked()` is called to distinguish ACL mismatch from keychain-locked, returning `AclMismatch` for better CLI guidance
+- `--force` overwrite now builds ACL before deleting the old key. Previously, ACL failure after delete would cause key loss
 
 ### Changed
 
-- `StoredEntry` now derives `Zeroize + ZeroizeOnDrop` — API key values are automatically zeroed from memory when the struct is dropped (previously relied on manual `Zeroizing` wrappers only at return boundaries)
+- `StoredEntry` now derives `Zeroize + ZeroizeOnDrop` — API key values are automatically zeroed from memory when the struct is dropped (removed redundant manual `zeroize()` call)
 
 ## [0.3.0] - 2026-03-07
 
