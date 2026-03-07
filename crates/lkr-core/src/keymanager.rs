@@ -9,7 +9,7 @@ use std::collections::HashMap;
 use std::ffi::c_void;
 use std::ptr;
 use std::sync::Mutex;
-use zeroize::{Zeroize, Zeroizing};
+use zeroize::{Zeroize, ZeroizeOnDrop, Zeroizing};
 
 // ---------------------------------------------------------------------------
 // Types
@@ -50,9 +50,10 @@ impl std::str::FromStr for KeyKind {
 /// Metadata stored alongside each key in Keychain.
 /// Serialized as JSON in the Keychain password field:
 ///   { "value": "<actual-api-key>", "kind": "runtime" }
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Serialize, Deserialize, Zeroize, ZeroizeOnDrop)]
 struct StoredEntry {
     value: String,
+    #[zeroize(skip)]
     kind: KeyKind,
 }
 
@@ -512,13 +513,25 @@ mod keychain_raw {
             )
         };
 
+        if status != 0 {
+            // Harden -25308: distinguish ACL mismatch from keychain-locked
+            if status == crate::error::os_status::ERR_SEC_INTERACTION_NOT_ALLOWED
+                && !item_ref.is_null()
+            {
+                let is_acl = unsafe { crate::acl::is_acl_blocked(item_ref as _) };
+                unsafe { CFRelease(item_ref as _) };
+                if is_acl {
+                    return Err(Error::AclMismatch);
+                }
+            } else if !item_ref.is_null() {
+                unsafe { CFRelease(item_ref as _) };
+            }
+            return Err(os_status_to_error(status, account));
+        }
+
         // Release the item ref (not needed for basic get)
         if !item_ref.is_null() {
             unsafe { CFRelease(item_ref as _) };
-        }
-
-        if status != 0 {
-            return Err(os_status_to_error(status, account));
         }
 
         if pw_data.is_null() {
@@ -861,10 +874,9 @@ impl KeyStore for KeychainStore {
                 keychain_raw::delete_v3(kc, &self.service, name)?;
             }
 
-            // Build ACL (best-effort: if binary path resolution fails, store without ACL)
-            let access = crate::acl::current_binary_path()
-                .and_then(|p| crate::acl::build_access(&p))
-                .unwrap_or(std::ptr::null_mut());
+            // Build ACL (fail-closed: if binary path resolution fails, refuse to store)
+            let access =
+                crate::acl::current_binary_path().and_then(|p| crate::acl::build_access(&p))?;
 
             let result = keychain_raw::set_v3(kc, access, &self.service, name, json.as_bytes());
 
@@ -917,10 +929,11 @@ impl KeyStore for KeychainStore {
                 .map_err(|e| Error::Keychain(format!("Invalid UTF-8 in Keychain: {}", e)))?,
         );
 
-        let stored: StoredEntry = serde_json::from_str(&json)
+        let mut stored: StoredEntry = serde_json::from_str(&json)
             .map_err(|e| Error::Keychain(format!("Failed to deserialize: {}", e)))?;
 
-        Ok((Zeroizing::new(stored.value), stored.kind))
+        let value = std::mem::take(&mut stored.value);
+        Ok((Zeroizing::new(value), stored.kind))
     }
 
     fn delete(&self, name: &str) -> Result<()> {
