@@ -28,7 +28,6 @@ Custom Keychain + Legacy ACL release. Pure FFI implementation (no CLI subprocess
 
 - `lkr init` — Create a dedicated `lkr.keychain-db` with password, auto-lock (5 min), lock-on-sleep
 - `lkr lock` — Explicitly lock the custom keychain
-- `lkr doctor` — Diagnose keychain health (existence, lock state, search list isolation, ACL status)
 - `lkr harden` — Re-apply Legacy ACL to all keys for the current binary path
 - Custom Keychain (`lkr.keychain-db`) — isolated from login.keychain, never added to search list (I1/SR9)
 - Legacy ACL (`SecAccessCreate` + `SecTrustedApplicationCreateFromPath`) — restricts key access to the LKR binary (Layer 2 defense)
