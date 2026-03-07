@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! PoC for LKR v0.3.0 — Custom Keychain + Legacy ACL (Pure FFI)
 //!
 //! Validates 4 capabilities required for v0.3.0:
