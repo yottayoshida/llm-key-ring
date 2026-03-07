@@ -1,3 +1,4 @@
+#![allow(dead_code, unused_imports)]
 //! PoC for LKR v0.3.0 — Custom Keychain + Legacy ACL (Pure FFI)
 //!
 //! Validates 4 capabilities required for v0.3.0:
@@ -17,8 +18,8 @@ use core_foundation::base::TCFType;
 use core_foundation::boolean::CFBoolean;
 use core_foundation::data::CFData;
 use core_foundation::string::CFString;
-use security_framework::os::macos::keychain::SecKeychain;
 use security_framework::os::macos::keychain::CreateOptions;
+use security_framework::os::macos::keychain::SecKeychain;
 use security_framework_sys::keychain_item::{SecItemCopyMatching, SecItemDelete};
 use std::ffi::{c_char, c_void};
 use std::path::Path;
@@ -45,27 +46,25 @@ unsafe extern "C" {
     fn SecKeychainLock(keychain: *const c_void) -> i32;
 
     fn SecAccessCreate(
-        descriptor: *const c_void, // CFStringRef
-        trusted_list: *const c_void, // CFArrayRef
+        descriptor: *const c_void,    // CFStringRef
+        trusted_list: *const c_void,  // CFArrayRef
         access_out: *mut *mut c_void, // SecAccessRef*
     ) -> i32;
 
     fn SecTrustedApplicationCreateFromPath(
-        path: *const c_char, // const char*
+        path: *const c_char,       // const char*
         app_out: *mut *mut c_void, // SecTrustedApplicationRef*
     ) -> i32;
 
     fn SecKeychainItemSetAccess(
-        item: *const c_void, // SecKeychainItemRef
+        item: *const c_void,   // SecKeychainItemRef
         access: *const c_void, // SecAccessRef
     ) -> i32;
 
-    fn SecKeychainSetSearchList(
-        search_list: *const c_void, // CFArrayRef
+    fn SecKeychainSetSearchList(search_list: *const c_void, // CFArrayRef
     ) -> i32;
 
-    fn SecKeychainCopySearchList(
-        search_list_out: *mut *mut c_void, // CFArrayRef*
+    fn SecKeychainCopySearchList(search_list_out: *mut *mut c_void, // CFArrayRef*
     ) -> i32;
 }
 
@@ -93,18 +92,15 @@ unsafe extern "C" {
         item_out: *mut *mut c_void,
     ) -> i32;
 
-    fn SecKeychainItemFreeContent(
-        attr_list: *const c_void,
-        data: *mut c_void,
-    ) -> i32;
+    fn SecKeychainItemFreeContent(attr_list: *const c_void, data: *mut c_void) -> i32;
 
     // Create item WITH initial SecAccessRef — avoids SetAccess GUI dialog
     fn SecKeychainItemCreateFromContent(
-        item_class: u32,           // SecItemClass (kSecGenericPasswordItemClass = 0x67656E70 = "genp")
+        item_class: u32, // SecItemClass (kSecGenericPasswordItemClass = 0x67656E70 = "genp")
         attr_list: *const SecKeychainAttributeList,
         length: u32,
         data: *const c_void,
-        keychain: *const c_void,   // SecKeychainRef
+        keychain: *const c_void,       // SecKeychainRef
         initial_access: *const c_void, // SecAccessRef (the key!)
         item_ref: *mut *mut c_void,
     ) -> i32;
@@ -113,7 +109,7 @@ unsafe extern "C" {
 // CSSM-style attribute structures for SecKeychainItemCreateFromContent
 #[repr(C)]
 struct SecKeychainAttribute {
-    tag: u32,       // 4-byte tag e.g. 'svce', 'acct'
+    tag: u32, // 4-byte tag e.g. 'svce', 'acct'
     length: u32,
     data: *mut c_void,
 }
@@ -162,7 +158,9 @@ unsafe extern "C" {
 fn cleanup_keychain(path: &str) {
     // Try to open and delete via Security framework first
     if let Ok(kc) = SecKeychain::open(Path::new(path)) {
-        unsafe { SecKeychainDelete(kc.as_concrete_TypeRef() as _); }
+        unsafe {
+            SecKeychainDelete(kc.as_concrete_TypeRef() as _);
+        }
     }
     let _ = std::fs::remove_file(path);
 }
@@ -279,10 +277,13 @@ fn poc_a() -> bool {
 
     let mut value_matches = false;
     if find_status == 0 && !pw_data.is_null() {
-        let retrieved = unsafe { std::slice::from_raw_parts(pw_data as *const u8, pw_len as usize) };
+        let retrieved =
+            unsafe { std::slice::from_raw_parts(pw_data as *const u8, pw_len as usize) };
         value_matches = retrieved == SECRET;
         println!("     value matches: {value_matches} (len={})", pw_len);
-        unsafe { SecKeychainItemFreeContent(ptr::null(), pw_data); }
+        unsafe {
+            SecKeychainItemFreeContent(ptr::null(), pw_data);
+        }
     }
 
     // A5: Delete item
@@ -312,13 +313,22 @@ fn poc_a() -> bool {
 
     // Release item_ref
     if !item_ref.is_null() {
-        unsafe { CFRelease(item_ref as _); }
+        unsafe {
+            CFRelease(item_ref as _);
+        }
     }
     if !found_item.is_null() {
-        unsafe { CFRelease(found_item as _); }
+        unsafe {
+            CFRelease(found_item as _);
+        }
     }
 
-    let pass = lock_status == 0 && add_status == 0 && has_item_ref && find_status == 0 && value_matches && del_status == 0;
+    let pass = lock_status == 0
+        && add_status == 0
+        && has_item_ref
+        && find_status == 0
+        && value_matches
+        && del_status == 0;
     println!("\nPoC-A Result: {}", if pass { "PASS" } else { "FAIL" });
     pass
 }
@@ -340,8 +350,14 @@ fn poc_b() -> bool {
         .password(KEYCHAIN_PW)
         .create(Path::new(KEYCHAIN_PATH))
     {
-        Ok(kc) => { println!("OK"); kc }
-        Err(e) => { println!("FAIL: {e}"); return false; }
+        Ok(kc) => {
+            println!("OK");
+            kc
+        }
+        Err(e) => {
+            println!("FAIL: {e}");
+            return false;
+        }
     };
 
     // B2: Get current binary path
@@ -352,9 +368,8 @@ fn poc_b() -> bool {
     // B3: Create SecTrustedApplicationRef
     print!("[B3] SecTrustedApplicationCreateFromPath... ");
     let mut trusted_app: *mut c_void = ptr::null_mut();
-    let ta_status = unsafe {
-        SecTrustedApplicationCreateFromPath(exe_path_c.as_ptr(), &mut trusted_app)
-    };
+    let ta_status =
+        unsafe { SecTrustedApplicationCreateFromPath(exe_path_c.as_ptr(), &mut trusted_app) };
     println!("{} ({ta_status})", status_str(ta_status));
     if ta_status != 0 {
         cleanup_keychain(KEYCHAIN_PATH);
@@ -365,21 +380,20 @@ fn poc_b() -> bool {
     print!("[B4] SecAccessCreate... ");
     let mut access: *mut c_void = ptr::null_mut();
     let access_status = unsafe {
-        let trusted_list = CFArrayCreateMutable(ptr::null(), 1, &kCFTypeArrayCallBacks as *const c_void);
+        let trusted_list =
+            CFArrayCreateMutable(ptr::null(), 1, &kCFTypeArrayCallBacks as *const c_void);
         CFArrayAppendValue(trusted_list, trusted_app);
 
         let desc = CFString::new("LKR PoC v0.3.0 test item");
-        let s = SecAccessCreate(
-            desc.as_concrete_TypeRef() as _,
-            trusted_list,
-            &mut access,
-        );
+        let s = SecAccessCreate(desc.as_concrete_TypeRef() as _, trusted_list, &mut access);
         CFRelease(trusted_list as _);
         s
     };
     println!("{} ({access_status})", status_str(access_status));
     if access_status != 0 {
-        unsafe { CFRelease(trusted_app as _); }
+        unsafe {
+            CFRelease(trusted_app as _);
+        }
         cleanup_keychain(KEYCHAIN_PATH);
         return false;
     }
@@ -430,7 +444,10 @@ fn poc_b() -> bool {
         println!("[B6b] SecKeychainItemSetAccess WITHOUT guard (GUI dialog may appear)...");
         println!("      >>> If a dialog appears, please click 'Always Allow' <<<");
         acl_status = unsafe { SecKeychainItemSetAccess(item_ref, access) };
-        println!("      SetAccess result: {} ({acl_status})", status_str(acl_status));
+        println!(
+            "      SetAccess result: {} ({acl_status})",
+            status_str(acl_status)
+        );
     } else {
         acl_status = acl_status_guarded;
         println!("[B6b] Skipped (B6a succeeded)");
@@ -478,7 +495,9 @@ fn poc_b() -> bool {
     };
     println!("{} ({read_status})", status_str(read_status));
     if read_status == 0 && !pw_data.is_null() {
-        unsafe { SecKeychainItemFreeContent(ptr::null(), pw_data); }
+        unsafe {
+            SecKeychainItemFreeContent(ptr::null(), pw_data);
+        }
     }
 
     // Cleanup
@@ -489,16 +508,43 @@ fn poc_b() -> bool {
     }
     cleanup_keychain(KEYCHAIN_PATH);
 
-    let best_acl = if acl_status_guarded == 0 { acl_status_guarded } else { acl_status };
-    let pass = ta_status == 0 && access_status == 0 && add_status == 0 && best_acl == 0 && acl_visible && read_status == 0;
+    let best_acl = if acl_status_guarded == 0 {
+        acl_status_guarded
+    } else {
+        acl_status
+    };
+    let pass = ta_status == 0
+        && access_status == 0
+        && add_status == 0
+        && best_acl == 0
+        && acl_visible
+        && read_status == 0;
 
     println!("\nPoC-B Summary:");
-    println!("  B3 TrustedApp:     {} ({ta_status})", status_str(ta_status));
-    println!("  B4 SecAccess:      {} ({access_status})", status_str(access_status));
-    println!("  B5 AddItem:        {} ({add_status})", status_str(add_status));
-    println!("  B6a SetACL+guard:  {} ({acl_status_guarded})", status_str(acl_status_guarded));
-    println!("  B6b SetACL no-guard: {} ({acl_status})", status_str(acl_status));
-    println!("  B8 ReadBack:       {} ({read_status})", status_str(read_status));
+    println!(
+        "  B3 TrustedApp:     {} ({ta_status})",
+        status_str(ta_status)
+    );
+    println!(
+        "  B4 SecAccess:      {} ({access_status})",
+        status_str(access_status)
+    );
+    println!(
+        "  B5 AddItem:        {} ({add_status})",
+        status_str(add_status)
+    );
+    println!(
+        "  B6a SetACL+guard:  {} ({acl_status_guarded})",
+        status_str(acl_status_guarded)
+    );
+    println!(
+        "  B6b SetACL no-guard: {} ({acl_status})",
+        status_str(acl_status)
+    );
+    println!(
+        "  B8 ReadBack:       {} ({read_status})",
+        status_str(read_status)
+    );
 
     println!("\nPoC-B Result: {}", if pass { "PASS" } else { "FAIL" });
     if acl_status_guarded == 0 {
@@ -531,8 +577,14 @@ fn poc_b2() -> bool {
         .password(KEYCHAIN_PW)
         .create(Path::new(KEYCHAIN_PATH))
     {
-        Ok(kc) => { println!("OK"); kc }
-        Err(e) => { println!("FAIL: {e}"); return false; }
+        Ok(kc) => {
+            println!("OK");
+            kc
+        }
+        Err(e) => {
+            println!("FAIL: {e}");
+            return false;
+        }
     };
 
     // B2-2: Create TrustedApp + SecAccess (same as PoC-B)
@@ -542,9 +594,8 @@ fn poc_b2() -> bool {
 
     print!("       SecTrustedApplicationCreateFromPath... ");
     let mut trusted_app: *mut c_void = ptr::null_mut();
-    let ta_status = unsafe {
-        SecTrustedApplicationCreateFromPath(exe_path_c.as_ptr(), &mut trusted_app)
-    };
+    let ta_status =
+        unsafe { SecTrustedApplicationCreateFromPath(exe_path_c.as_ptr(), &mut trusted_app) };
     println!("{} ({ta_status})", status_str(ta_status));
     if ta_status != 0 {
         cleanup_keychain(KEYCHAIN_PATH);
@@ -554,20 +605,19 @@ fn poc_b2() -> bool {
     print!("       SecAccessCreate... ");
     let mut access: *mut c_void = ptr::null_mut();
     let access_status = unsafe {
-        let trusted_list = CFArrayCreateMutable(ptr::null(), 1, &kCFTypeArrayCallBacks as *const c_void);
+        let trusted_list =
+            CFArrayCreateMutable(ptr::null(), 1, &kCFTypeArrayCallBacks as *const c_void);
         CFArrayAppendValue(trusted_list, trusted_app);
         let desc = CFString::new("LKR PoC v0.3.0 B2 test item");
-        let s = SecAccessCreate(
-            desc.as_concrete_TypeRef() as _,
-            trusted_list,
-            &mut access,
-        );
+        let s = SecAccessCreate(desc.as_concrete_TypeRef() as _, trusted_list, &mut access);
         CFRelease(trusted_list as _);
         s
     };
     println!("{} ({access_status})", status_str(access_status));
     if access_status != 0 {
-        unsafe { CFRelease(trusted_app as _); }
+        unsafe {
+            CFRelease(trusted_app as _);
+        }
         cleanup_keychain(KEYCHAIN_PATH);
         return false;
     }
@@ -609,7 +659,7 @@ fn poc_b2() -> bool {
             SECRET.len() as u32,
             SECRET.as_ptr() as _,
             keychain.as_concrete_TypeRef() as _,
-            access,           // <-- initial SecAccess! This is the key difference
+            access, // <-- initial SecAccess! This is the key difference
             &mut item_ref,
         )
     };
@@ -654,17 +704,24 @@ fn poc_b2() -> bool {
     };
     println!("{} ({read_status})", status_str(read_status));
     let value_ok = if read_status == 0 && !pw_data.is_null() {
-        let retrieved = unsafe { std::slice::from_raw_parts(pw_data as *const u8, pw_len as usize) };
+        let retrieved =
+            unsafe { std::slice::from_raw_parts(pw_data as *const u8, pw_len as usize) };
         let ok = retrieved == SECRET;
         println!("       value matches: {ok}");
-        unsafe { SecKeychainItemFreeContent(ptr::null(), pw_data); }
+        unsafe {
+            SecKeychainItemFreeContent(ptr::null(), pw_data);
+        }
         ok
     } else {
         false
     };
 
     // Cleanup
-    if !item_ref.is_null() { unsafe { CFRelease(item_ref as _); } }
+    if !item_ref.is_null() {
+        unsafe {
+            CFRelease(item_ref as _);
+        }
+    }
     unsafe {
         CFRelease(access as _);
         CFRelease(trusted_app as _);
@@ -674,9 +731,18 @@ fn poc_b2() -> bool {
     let pass = create_status == 0 && acl_visible && read_status == 0 && value_ok;
     println!("\nPoC-B2 Summary:");
     println!("  TrustedApp:      {} ({ta_status})", status_str(ta_status));
-    println!("  SecAccess:       {} ({access_status})", status_str(access_status));
-    println!("  CreateFromContent: {} ({create_status})", status_str(create_status));
-    println!("  ReadBack:        {} ({read_status})", status_str(read_status));
+    println!(
+        "  SecAccess:       {} ({access_status})",
+        status_str(access_status)
+    );
+    println!(
+        "  CreateFromContent: {} ({create_status})",
+        status_str(create_status)
+    );
+    println!(
+        "  ReadBack:        {} ({read_status})",
+        status_str(read_status)
+    );
     println!("  Value match:     {value_ok}");
 
     println!("\nPoC-B2 Result: {}", if pass { "PASS" } else { "FAIL" });
@@ -707,7 +773,10 @@ fn poc_c() -> bool {
         .create(Path::new(KEYCHAIN_PATH))
     {
         Ok(kc) => kc,
-        Err(e) => { println!("FAIL: {e}"); return false; }
+        Err(e) => {
+            println!("FAIL: {e}");
+            return false;
+        }
     };
 
     let add_status = unsafe {
@@ -723,7 +792,10 @@ fn poc_c() -> bool {
         )
     };
     println!("{} ({add_status})", status_str(add_status));
-    if add_status != 0 { cleanup_keychain(KEYCHAIN_PATH); return false; }
+    if add_status != 0 {
+        cleanup_keychain(KEYCHAIN_PATH);
+        return false;
+    }
 
     // C2: Search with kSecMatchSearchList scoped to custom keychain
     print!("[C2] SecItemCopyMatching (scoped to custom keychain)... ");
@@ -780,7 +852,9 @@ fn poc_c() -> bool {
         let not_found = s == -25300; // errSecItemNotFound
         println!("{} ({s}) — isolation: {not_found}", status_str(s));
 
-        if !result.is_null() { CFRelease(result); }
+        if !result.is_null() {
+            CFRelease(result);
+        }
         CFRelease(dict);
         CFRelease(arr as _);
         not_found
@@ -822,10 +896,15 @@ fn poc_d() -> bool {
         .password(KEYCHAIN_PW)
         .create(Path::new(KEYCHAIN_PATH))
     {
-        Ok(kc) => { println!("OK"); kc }
+        Ok(kc) => {
+            println!("OK");
+            kc
+        }
         Err(e) => {
             println!("FAIL: {e}");
-            unsafe { CFRelease(original_list as _); }
+            unsafe {
+                CFRelease(original_list as _);
+            }
             return false;
         }
     };
@@ -833,11 +912,17 @@ fn poc_d() -> bool {
     // D3: Check if custom keychain was auto-added to search list
     print!("[D3] Check if auto-added to search list... ");
     let mut current_list: *mut c_void = ptr::null_mut();
-    unsafe { SecKeychainCopySearchList(&mut current_list); }
+    unsafe {
+        SecKeychainCopySearchList(&mut current_list);
+    }
     let current_count = unsafe { CFArrayGetCount(current_list) };
     let was_auto_added = current_count > original_count;
-    println!("count before: {original_count}, after: {current_count}, auto-added: {was_auto_added}");
-    unsafe { CFRelease(current_list as _); }
+    println!(
+        "count before: {original_count}, after: {current_count}, auto-added: {was_auto_added}"
+    );
+    unsafe {
+        CFRelease(current_list as _);
+    }
 
     // D4: Restore original search list (exclude custom keychain)
     print!("[D4] SecKeychainSetSearchList (restore original)... ");
@@ -847,11 +932,15 @@ fn poc_d() -> bool {
     // D5: Verify exclusion
     print!("[D5] Verify exclusion... ");
     let mut after_list: *mut c_void = ptr::null_mut();
-    unsafe { SecKeychainCopySearchList(&mut after_list); }
+    unsafe {
+        SecKeychainCopySearchList(&mut after_list);
+    }
     let after_count = unsafe { CFArrayGetCount(after_list) };
     let excluded = after_count == original_count;
     println!("count: {after_count}, matches original: {excluded}");
-    unsafe { CFRelease(after_list as _); }
+    unsafe {
+        CFRelease(after_list as _);
+    }
 
     // D6: Verify via `security list-keychains`
     println!("[D6] `security list-keychains` output:");
@@ -891,13 +980,17 @@ fn poc_d() -> bool {
     println!("{} ({direct_add})", status_str(direct_add));
 
     // Cleanup
-    unsafe { CFRelease(original_list as _); }
+    unsafe {
+        CFRelease(original_list as _);
+    }
     cleanup_keychain(KEYCHAIN_PATH);
 
     let pass = set_status == 0 && excluded && not_in_list && direct_add == 0;
     println!("\nPoC-D Result: {}", if pass { "PASS" } else { "FAIL" });
     if was_auto_added {
-        println!("  NOTE: CreateOptions::create() auto-adds to search list. Must remove after create.");
+        println!(
+            "  NOTE: CreateOptions::create() auto-adds to search list. Must remove after create."
+        );
     }
     pass
 }
@@ -909,7 +1002,9 @@ fn poc_d() -> bool {
 fn main() {
     println!("=== LKR v0.3.0 PoC — Custom Keychain + Legacy ACL (Pure FFI) ===");
     println!("Keychain path: {KEYCHAIN_PATH}");
-    println!("WARNING: This PoC creates/deletes a temporary keychain. It does NOT touch login.keychain.");
+    println!(
+        "WARNING: This PoC creates/deletes a temporary keychain. It does NOT touch login.keychain."
+    );
 
     let a = poc_a();
     let b = poc_b();
@@ -920,11 +1015,26 @@ fn main() {
     println!("\n============================================================");
     println!("SUMMARY");
     println!("============================================================");
-    println!("  PoC-A  (Custom Keychain lifecycle):  {}", if a { "PASS" } else { "FAIL" });
-    println!("  PoC-B  (Legacy ACL via SetAccess):   {}", if b { "PASS" } else { "FAIL" });
-    println!("  PoC-B2 (Legacy ACL via CreateFrom):  {}", if b2 { "PASS" } else { "FAIL" });
-    println!("  PoC-C  (Scoped search):              {}", if c { "PASS" } else { "FAIL" });
-    println!("  PoC-D  (Search list exclusion):      {}", if d { "PASS" } else { "FAIL" });
+    println!(
+        "  PoC-A  (Custom Keychain lifecycle):  {}",
+        if a { "PASS" } else { "FAIL" }
+    );
+    println!(
+        "  PoC-B  (Legacy ACL via SetAccess):   {}",
+        if b { "PASS" } else { "FAIL" }
+    );
+    println!(
+        "  PoC-B2 (Legacy ACL via CreateFrom):  {}",
+        if b2 { "PASS" } else { "FAIL" }
+    );
+    println!(
+        "  PoC-C  (Scoped search):              {}",
+        if c { "PASS" } else { "FAIL" }
+    );
+    println!(
+        "  PoC-D  (Search list exclusion):      {}",
+        if d { "PASS" } else { "FAIL" }
+    );
 
     let acl_ok = b || b2;
 
@@ -942,6 +1052,12 @@ fn main() {
         println!("VERDICT: CRITICAL FAILURES — review individual results above");
     }
 
-    let exit_code = if a && acl_ok && c && d { 0 } else if a && c && d { 1 } else { 2 };
+    let exit_code = if a && acl_ok && c && d {
+        0
+    } else if a && c && d {
+        1
+    } else {
+        2
+    };
     std::process::exit(exit_code);
 }

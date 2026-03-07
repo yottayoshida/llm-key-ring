@@ -93,16 +93,14 @@ pub fn open() -> Result<SecKeychain> {
 
 /// Unlock the custom keychain with the given password.
 pub fn unlock(keychain: &mut SecKeychain, password: &str) -> Result<()> {
-    keychain
-        .unlock(Some(password))
-        .map_err(|e| {
-            let code = e.code();
-            match code {
-                -25293 => Error::PasswordWrong,
-                -25308 => Error::KeychainLocked, // interaction not allowed
-                _ => Error::Keychain(format!("Failed to unlock: {e}")),
-            }
-        })
+    keychain.unlock(Some(password)).map_err(|e| {
+        let code = e.code();
+        match code {
+            -25293 => Error::PasswordWrong,
+            -25308 => Error::KeychainLocked, // interaction not allowed
+            _ => Error::Keychain(format!("Failed to unlock: {e}")),
+        }
+    })
 }
 
 /// Lock the custom keychain.
@@ -181,8 +179,11 @@ pub fn ensure_not_in_search_list(keychain: &SecKeychain) -> Result<()> {
         }
 
         // Build new list without our keychain
-        let new_list =
-            CFArrayCreateMutable(std::ptr::null(), count, &kCFTypeArrayCallBacks as *const c_void);
+        let new_list = CFArrayCreateMutable(
+            std::ptr::null(),
+            count,
+            &kCFTypeArrayCallBacks as *const c_void,
+        );
         for i in 0..count {
             let item = CFArrayGetValueAtIndex(search_list, i);
             if !CFEqual(item, our_ref) {
@@ -256,9 +257,10 @@ pub fn is_in_search_list(keychain: &SecKeychain) -> Result<bool> {
 ///
 /// Re-exported from `security-framework` crate. On drop, user interaction is re-enabled.
 /// Use this before any Keychain operation to prevent macOS GUI dialogs.
-pub fn disable_user_interaction(
-) -> std::result::Result<security_framework::os::macos::keychain::KeychainUserInteractionLock, security_framework::base::Error>
-{
+pub fn disable_user_interaction() -> std::result::Result<
+    security_framework::os::macos::keychain::KeychainUserInteractionLock,
+    security_framework::base::Error,
+> {
     SecKeychain::disable_user_interaction()
 }
 

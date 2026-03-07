@@ -206,10 +206,7 @@ fn open_and_unlock() -> lkr_core::Result<KeychainStore> {
             Ok(()) => return Ok(KeychainStore::new_v3(kc)),
             Err(lkr_core::Error::PasswordWrong) => {
                 if attempt < MAX_RETRIES {
-                    eprintln!(
-                        "Wrong password. ({}/{} attempts)",
-                        attempt, MAX_RETRIES
-                    );
+                    eprintln!("Wrong password. ({}/{} attempts)", attempt, MAX_RETRIES);
                 } else {
                     return Err(lkr_core::Error::PasswordWrong);
                 }
@@ -281,9 +278,7 @@ fn main() {
                     output,
                     force,
                 } => cmd_gen(&store, &template, output.as_deref(), force, stdout_is_tty),
-                Commands::Migrate { dry_run, yes } => {
-                    cmd_migrate(&store, dry_run, yes)
-                }
+                Commands::Migrate { dry_run, yes } => cmd_migrate(&store, dry_run, yes),
                 Commands::Harden { dry_run } => cmd_harden(&store, dry_run),
                 Commands::Exec {
                     keys,
@@ -308,7 +303,9 @@ fn main() {
                 // Check legacy login.keychain for migrate guidance
                 let legacy_store = KeychainStore::new();
                 if legacy_store.exists(name).unwrap_or(false) {
-                    eprintln!("  Why: The key exists in login.keychain but not in the LKR keychain.");
+                    eprintln!(
+                        "  Why: The key exists in login.keychain but not in the LKR keychain."
+                    );
                     eprintln!("  Fix: Run `lkr migrate` to move your keys.");
                 } else {
                     eprintln!("  Fix: Run `lkr set {}` to store a new key.", name);
@@ -317,10 +314,8 @@ fn main() {
                         let suggestions: Vec<&str> = entries
                             .iter()
                             .filter(|entry| {
-                                (name.len() >= 4
-                                    && entry.name.contains(&name[..name.len().min(4)]))
-                                    || entry.provider
-                                        == name.split(':').next().unwrap_or("")
+                                (name.len() >= 4 && entry.name.contains(&name[..name.len().min(4)]))
+                                    || entry.provider == name.split(':').next().unwrap_or("")
                             })
                             .map(|e| e.name.as_str())
                             .collect();
@@ -347,13 +342,19 @@ fn main() {
 
             lkr_core::Error::InteractionNotAllowed => {
                 eprintln!("Error: Access denied to keychain item.");
-                eprintln!("  Why: The binary fingerprint may have changed (e.g. after update or reinstall).");
-                eprintln!("  Fix: Run `lkr harden` to re-apply access control for the current binary.");
+                eprintln!(
+                    "  Why: The binary fingerprint may have changed (e.g. after update or reinstall)."
+                );
+                eprintln!(
+                    "  Fix: Run `lkr harden` to re-apply access control for the current binary."
+                );
             }
 
             lkr_core::Error::AclMismatch => {
                 eprintln!("Error: Access denied — binary fingerprint has changed.");
-                eprintln!("  Why: LKR was updated or reinstalled, and the access control no longer matches.");
+                eprintln!(
+                    "  Why: LKR was updated or reinstalled, and the access control no longer matches."
+                );
                 eprintln!("  Fix: Run `lkr harden` to refresh access control.");
             }
 
@@ -747,7 +748,10 @@ fn cmd_gen(
 fn cmd_init() {
     if lkr_core::custom_keychain::is_initialized() {
         eprintln!("LKR keychain is already initialized.");
-        eprintln!("  Path: {}", lkr_core::custom_keychain::keychain_path().display());
+        eprintln!(
+            "  Path: {}",
+            lkr_core::custom_keychain::keychain_path().display()
+        );
         return;
     }
 
@@ -791,7 +795,10 @@ fn cmd_init() {
     match lkr_core::custom_keychain::create(&password) {
         Ok(_kc) => {
             eprintln!("\nLKR keychain created successfully.");
-            eprintln!("  Path: {}", lkr_core::custom_keychain::keychain_path().display());
+            eprintln!(
+                "  Path: {}",
+                lkr_core::custom_keychain::keychain_path().display()
+            );
             eprintln!("  Auto-lock: 5 minutes / on sleep");
             eprintln!("\n  Next steps:");
             eprintln!("    lkr set openai:prod       # Store a key");
@@ -919,7 +926,10 @@ fn cmd_migrate(store: &KeychainStore, dry_run: bool, yes: bool) -> lkr_core::Res
 
     // Confirmation
     if !yes {
-        eprintln!("  Will migrate {} key(s) to LKR keychain:", to_migrate.len());
+        eprintln!(
+            "  Will migrate {} key(s) to LKR keychain:",
+            to_migrate.len()
+        );
         for entry in &to_migrate {
             eprintln!("    {} ({})", entry.name, entry.kind);
         }
@@ -974,8 +984,7 @@ fn cmd_migrate(store: &KeychainStore, dry_run: bool, yes: bool) -> lkr_core::Res
     );
 
     if success_count > 0 {
-        eprintln!(
-            "\n  Legacy keys are still in login.keychain. You can remove them with:");
+        eprintln!("\n  Legacy keys are still in login.keychain. You can remove them with:");
         eprintln!("    security delete-generic-password -s com.llm-key-ring -a <name>");
     }
 

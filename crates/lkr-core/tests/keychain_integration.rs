@@ -162,9 +162,7 @@ fn test_list_keys() {
     store
         .set("alpha:key", "v1", KeyKind::Runtime, false)
         .unwrap();
-    store
-        .set("beta:key", "v2", KeyKind::Admin, false)
-        .unwrap();
+    store.set("beta:key", "v2", KeyKind::Admin, false).unwrap();
 
     // List without admin
     let entries = store.list(false).unwrap();
@@ -218,13 +216,19 @@ fn test_disable_user_interaction_guard_prevents_dialog() {
 
     // While guard is held, user interaction should be disallowed
     let allowed = SecKeychain::user_interaction_allowed().unwrap_or(true);
-    assert!(!allowed, "User interaction should be disabled while guard is held");
+    assert!(
+        !allowed,
+        "User interaction should be disabled while guard is held"
+    );
 
     // Drop guard — interaction re-enabled
     drop(guard.unwrap());
 
     let allowed = SecKeychain::user_interaction_allowed().unwrap_or(false);
-    assert!(allowed, "User interaction should be re-enabled after guard drop");
+    assert!(
+        allowed,
+        "User interaction should be re-enabled after guard drop"
+    );
 }
 
 // ── Tier 3: Integration tests (manual, #[ignore]) ──────────────
@@ -240,7 +244,9 @@ fn test_acl_blocks_other_process() {
     eprintln!("Manual test: ACL blocks non-lkr processes");
     eprintln!("  1. lkr init && lkr set test:acl sk-test-value");
     eprintln!("  2. security find-generic-password -s com.llm-key-ring -a test:acl -w");
-    eprintln!("  Expected: security: SecKeychainSearchCopyNext: The specified item could not be found");
+    eprintln!(
+        "  Expected: security: SecKeychainSearchCopyNext: The specified item could not be found"
+    );
 }
 
 #[test]
