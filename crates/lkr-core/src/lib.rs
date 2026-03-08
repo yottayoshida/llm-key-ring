@@ -1,3 +1,5 @@
+#![warn(clippy::undocumented_unsafe_blocks)]
+
 pub mod acl;
 pub mod custom_keychain;
 pub mod error;

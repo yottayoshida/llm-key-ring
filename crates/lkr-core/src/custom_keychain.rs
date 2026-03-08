@@ -9,7 +9,9 @@ use security_framework::os::macos::keychain::{CreateOptions, SecKeychain};
 use std::ffi::c_void;
 use std::path::PathBuf;
 
-// ── Hand-declared Security.framework symbols ────────────────────
+// Security.framework Keychain lifecycle symbols.
+// These are not re-exported by the `security-framework` crate at the
+// level we need (lock/delete/search-list management).
 unsafe extern "C" {
     fn SecKeychainLock(keychain: *const c_void) -> i32;
     fn SecKeychainDelete(keychain: *const c_void) -> i32;
@@ -17,7 +19,8 @@ unsafe extern "C" {
     fn SecKeychainSetSearchList(search_list: *const c_void) -> i32;
 }
 
-// ── Core Foundation helpers ─────────────────────────────────────
+// CoreFoundation helpers for search list manipulation (CFArray iteration
+// and mutation).
 unsafe extern "C" {
     fn CFArrayGetCount(array: *const c_void) -> isize;
     fn CFArrayGetValueAtIndex(array: *const c_void, idx: isize) -> *const c_void;
@@ -110,6 +113,8 @@ pub fn unlock(keychain: &mut SecKeychain, password: &str) -> Result<()> {
 
 /// Lock the custom keychain.
 pub fn lock(keychain: &SecKeychain) -> Result<()> {
+    // SAFETY: keychain is a valid SecKeychainRef (from SecKeychain wrapper).
+    // as_concrete_TypeRef returns the inner CF pointer.
     let status = unsafe { SecKeychainLock(keychain.as_concrete_TypeRef() as _) };
     if status != 0 {
         return Err(Error::Keychain(format!(
@@ -121,6 +126,8 @@ pub fn lock(keychain: &SecKeychain) -> Result<()> {
 
 /// Delete the custom keychain (used by cleanup/reset).
 pub fn delete(keychain: &SecKeychain) -> Result<()> {
+    // SAFETY: keychain is a valid SecKeychainRef. SecKeychainDelete removes
+    // the keychain file and invalidates the ref. Caller must not use it after.
     let status = unsafe { SecKeychainDelete(keychain.as_concrete_TypeRef() as _) };
     if status != 0 {
         return Err(Error::Keychain(format!(
@@ -154,6 +161,13 @@ fn apply_settings(_keychain: &SecKeychain) -> Result<()> {
 ///
 /// Saves the original search list, filters out our keychain, and restores.
 pub fn ensure_not_in_search_list(keychain: &SecKeychain) -> Result<()> {
+    // SAFETY: Large unsafe block for search list manipulation.
+    // CF objects and their lifecycle:
+    // - search_list: Create Rule (from CopySearchList), released at end
+    // - new_list: Create Rule (from CFArrayCreateMutable), released after SetSearchList
+    // - verify_list: Create Rule (from CopySearchList), released after verification
+    // - Array element access: Get Rule (valid while parent array lives)
+    // keychain ref is borrowed (not consumed).
     unsafe {
         // Get current search list
         let mut search_list: *mut c_void = std::ptr::null_mut();
@@ -232,6 +246,9 @@ pub fn ensure_not_in_search_list(keychain: &SecKeychain) -> Result<()> {
 /// Check if the custom keychain is in the search list (for SR9 validation).
 /// Returns true if found (which is a violation of I1).
 pub fn is_in_search_list(keychain: &SecKeychain) -> Result<bool> {
+    // SAFETY: search_list follows Create Rule (from CopySearchList), released
+    // at end. Array elements are Get Rule (valid while search_list lives).
+    // keychain ref is borrowed (not consumed).
     unsafe {
         let mut search_list: *mut c_void = std::ptr::null_mut();
         let status = SecKeychainCopySearchList(&mut search_list);
