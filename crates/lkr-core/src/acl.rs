@@ -12,7 +12,9 @@ use security_framework::os::macos::keychain::SecKeychain;
 use std::ffi::{CString, c_void};
 use std::path::Path;
 
-// ── Hand-declared Security.framework symbols ────────────────────
+// Security.framework Legacy ACL symbols.
+// `SecTrustedApplicationCreateFromPath` and `SecAccessCreate` form the
+// only code-sign-free path to per-binary ACL on macOS Keychain.
 unsafe extern "C" {
     fn SecTrustedApplicationCreateFromPath(path: *const i8, app_out: *mut *mut c_void) -> i32;
 
@@ -25,7 +27,7 @@ unsafe extern "C" {
     fn SecKeychainItemCopyAccess(item_ref: *const c_void, access_out: *mut *mut c_void) -> i32;
 }
 
-// ── Core Foundation helpers ─────────────────────────────────────
+// CoreFoundation helpers for building the trusted application CFArray.
 unsafe extern "C" {
     fn CFArrayCreateMutable(
         allocator: *const c_void,
@@ -79,6 +81,11 @@ pub fn build_access(lkr_binary_path: &Path) -> Result<*mut c_void> {
     )
     .map_err(|e| Error::Acl(format!("Binary path contains NUL byte: {e}")))?;
 
+    // SAFETY: All FFI calls below use validated inputs:
+    // - path_cstr: validated to exist and be a regular file (SR5 checks above)
+    // - CF objects follow Create Rule: trusted_app, trusted_list, cf_desc,
+    //   access are all released before returning (or on error).
+    // - The returned access ptr follows Create Rule — caller must release.
     unsafe {
         // Step 1: Create a trusted application reference for the LKR binary
         let mut trusted_app: *mut c_void = std::ptr::null_mut();
@@ -140,6 +147,10 @@ pub unsafe fn is_acl_blocked(item_ref: *const c_void) -> bool {
 
     let _guard = SecKeychain::disable_user_interaction();
 
+    // SAFETY: item_ref is non-null (checked above) and is a valid
+    // SecKeychainItemRef provided by the caller (keymanager.rs).
+    // `access` follows Create Rule if returned; released immediately.
+    // disable_user_interaction guard prevents GUI dialogs.
     unsafe {
         let mut access: *mut c_void = std::ptr::null_mut();
         let status = SecKeychainItemCopyAccess(item_ref, &mut access);

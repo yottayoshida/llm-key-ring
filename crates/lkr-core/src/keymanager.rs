@@ -189,7 +189,8 @@ mod keychain_raw {
     };
     use security_framework_sys::keychain_item::{SecItemAdd, SecItemCopyMatching, SecItemDelete};
 
-    // CFDictionary raw operations — not exposed at the level we need by core_foundation
+    // CoreFoundation CFDictionary raw operations — not exposed at the level
+    // we need by the `core_foundation` crate.
     #[link(name = "CoreFoundation", kind = "framework")]
     unsafe extern "C" {
         fn CFDictionaryCreateMutable(
@@ -204,8 +205,8 @@ mod keychain_raw {
         static kCFTypeDictionaryValueCallBacks: c_void;
     }
 
-    // Accessibility constants from Security.framework.
-    // kSecAttrAccessible (key) may not be in security-framework-sys, so declare directly.
+    // Security.framework accessibility constants.
+    // Not all are re-exported by `security-framework-sys`, so we declare directly.
     #[link(name = "Security", kind = "framework")]
     unsafe extern "C" {
         static kSecAttrAccessible: *const c_void;
@@ -213,7 +214,9 @@ mod keychain_raw {
         static kSecMatchSearchList: *const c_void;
     }
 
-    // v0.3.0: Legacy Keychain API for CreateFromContent + FindGenericPassword
+    // Legacy Keychain C API (v0.3.0).
+    // `SecKeychainItemCreateFromContent` and `SecKeychainFindGenericPassword`
+    // are the only APIs that accept a `SecAccessRef` at creation time.
     unsafe extern "C" {
         fn SecKeychainItemCreateFromContent(
             item_class: u32,
@@ -256,6 +259,9 @@ mod keychain_raw {
     }
 
     fn new_dict() -> *mut c_void {
+        // SAFETY: CFDictionaryCreateMutable with NULL allocator uses the default
+        // allocator. The returned dict follows Create Rule (caller must release).
+        // kCFType*CallBacks are static, valid for program lifetime.
         unsafe {
             CFDictionaryCreateMutable(
                 ptr::null(),
@@ -271,6 +277,10 @@ mod keychain_raw {
     fn set_base(dict: *mut c_void, service: &str, account: &str) {
         let svc = CFString::new(service);
         let acct = CFString::new(account);
+        // SAFETY: `dict` is a valid mutable CFDictionary from new_dict().
+        // CFDictionarySetValue retains key/value refs (svc, acct stay valid
+        // through this scope; after SetValue the dict holds its own retain).
+        // kSec* constants are framework statics, valid for program lifetime.
         unsafe {
             CFDictionarySetValue(dict, kSecClass as _, kSecClassGenericPassword as _);
             CFDictionarySetValue(dict, kSecAttrService as _, svc.as_concrete_TypeRef() as _);
@@ -309,6 +319,9 @@ mod keychain_raw {
         let dict = new_dict();
         set_base(dict, service, account);
         let data = CFData::from_buffer(password);
+        // SAFETY: `dict` from new_dict() is valid. CFDictionarySetValue retains
+        // values. SecItemAdd reads the dict; dict is released after the call.
+        // All CF statics are valid for program lifetime.
         unsafe {
             CFDictionarySetValue(dict, kSecValueData as _, data.as_concrete_TypeRef() as _);
             // v0.2.0: Disable iCloud Keychain sync
@@ -335,6 +348,10 @@ mod keychain_raw {
     pub(super) fn get(service: &str, account: &str) -> Result<Vec<u8>> {
         let dict = new_dict();
         set_base(dict, service, account);
+        // SAFETY: `dict` from new_dict() is valid. SecItemCopyMatching reads
+        // the dict and writes a retained CF object into `result` (Create Rule).
+        // `result` is wrapped with wrap_under_create_rule to transfer ownership
+        // to Rust. Dict is released immediately after the query.
         unsafe {
             CFDictionarySetValue(
                 dict,
@@ -376,6 +393,8 @@ mod keychain_raw {
         set_base(query, service, account);
         let attrs = new_dict();
 
+        // SAFETY: `query` and `attrs` from new_dict() are valid. SecItemUpdate
+        // reads both dicts. Both are released after the call.
         unsafe {
             // Query: find item (SynchronizableAny for v0.1.0 compat)
             CFDictionarySetValue(
@@ -408,6 +427,8 @@ mod keychain_raw {
     pub(super) fn delete(service: &str, account: &str) -> Result<()> {
         let dict = new_dict();
         set_base(dict, service, account);
+        // SAFETY: `dict` from new_dict() is valid. SecItemDelete reads the dict
+        // and deletes matching items. Dict is released after the call.
         unsafe {
             // v0.1.0 keys may lack synchronizable attr; match all
             CFDictionarySetValue(
@@ -478,6 +499,10 @@ mod keychain_raw {
         let item_class: u32 = u32::from_be_bytes(*b"genp"); // kSecGenericPasswordItemClass
 
         let mut item_ref: *mut c_void = std::ptr::null_mut();
+        // SAFETY: All pointers are valid stack locals or CF refs held for the
+        // duration of the call. `keychain` and `access` are valid CF objects
+        // from the caller. `attr_list` points to stack-allocated attrs whose
+        // data pointers (svc_bytes, acct_bytes) remain valid through this scope.
         let status = unsafe {
             SecKeychainItemCreateFromContent(
                 item_class,
@@ -492,6 +517,8 @@ mod keychain_raw {
 
         // Release the item ref if returned (we don't need it)
         if !item_ref.is_null() {
+            // SAFETY: item_ref was returned by CreateFromContent (Create Rule),
+            // retain count == 1, released here.
             unsafe { CFRelease(item_ref as _) };
         }
 
@@ -524,6 +551,10 @@ mod keychain_raw {
         let mut pw_data: *mut c_void = std::ptr::null_mut();
         let mut item_ref: *mut c_void = std::ptr::null_mut();
 
+        // SAFETY: All byte slices (svc_bytes, acct_bytes) are valid for the
+        // call duration. Output pointers (pw_data, item_ref) are stack-local.
+        // Keychain ref is valid (held by caller). Returned pw_data follows
+        // Create Rule and must be freed with SecKeychainItemFreeContent.
         let status = unsafe {
             SecKeychainFindGenericPassword(
                 keychain.as_concrete_TypeRef() as _,
@@ -542,12 +573,16 @@ mod keychain_raw {
             if status == crate::error::os_status::ERR_SEC_INTERACTION_NOT_ALLOWED
                 && !item_ref.is_null()
             {
+                // SAFETY: item_ref is non-null (checked above), valid
+                // SecKeychainItemRef returned by FindGenericPassword.
                 let is_acl = unsafe { crate::acl::is_acl_blocked(item_ref as _) };
+                // SAFETY: item_ref follows Create Rule, released here.
                 unsafe { CFRelease(item_ref as _) };
                 if is_acl {
                     return Err(Error::AclMismatch);
                 }
             } else if !item_ref.is_null() {
+                // SAFETY: item_ref follows Create Rule, released on error path.
                 unsafe { CFRelease(item_ref as _) };
             }
             return Err(os_status_to_error(status, account));
@@ -555,6 +590,7 @@ mod keychain_raw {
 
         // Release the item ref (not needed for basic get)
         if !item_ref.is_null() {
+            // SAFETY: item_ref follows Create Rule, released on success path.
             unsafe { CFRelease(item_ref as _) };
         }
 
@@ -565,10 +601,14 @@ mod keychain_raw {
         }
 
         // Copy data out before freeing
+        // SAFETY: pw_data is non-null (checked above) and points to pw_length
+        // bytes allocated by Security.framework. Data is copied immediately
+        // into a Vec before freeing.
         let bytes = unsafe { std::slice::from_raw_parts(pw_data as *const u8, pw_length as usize) }
             .to_vec();
 
-        // Free the password data allocated by Security.framework
+        // SAFETY: pw_data was allocated by SecKeychainFindGenericPassword.
+        // SecKeychainItemFreeContent releases it. Must be called exactly once.
         unsafe {
             SecKeychainItemFreeContent(std::ptr::null(), pw_data);
         }
@@ -596,6 +636,8 @@ mod keychain_raw {
 
         let mut item_ref: *mut c_void = std::ptr::null_mut();
 
+        // SAFETY: Byte slices valid for call duration. pw_data/pw_length are
+        // null (not needed). item_ref is stack-local output pointer.
         let find_status = unsafe {
             SecKeychainFindGenericPassword(
                 keychain.as_concrete_TypeRef() as _,
@@ -619,7 +661,9 @@ mod keychain_raw {
             });
         }
 
+        // SAFETY: item_ref is non-null (checked above), valid SecKeychainItemRef.
         let delete_status = unsafe { SecKeychainItemDelete(item_ref) };
+        // SAFETY: item_ref follows Create Rule, released after delete.
         unsafe { CFRelease(item_ref as _) };
 
         if delete_status != 0 {
@@ -656,6 +700,7 @@ mod keychain_raw {
         let _guard = SecKeychain::disable_user_interaction()
             .map_err(|e| Error::Keychain(format!("Failed to disable user interaction: {e}")))?;
 
+        // Security.framework constants and functions for batch item enumeration.
         #[link(name = "Security", kind = "framework")]
         unsafe extern "C" {
             static kSecReturnAttributes: *const c_void;
@@ -672,7 +717,7 @@ mod keychain_raw {
             ) -> i32;
         }
 
-        // Build CFArray with single keychain for kSecMatchSearchList
+        // CoreFoundation CFArray helpers for building kSecMatchSearchList.
         unsafe extern "C" {
             fn CFArrayCreateMutable(
                 allocator: *const c_void,
@@ -686,6 +731,13 @@ mod keychain_raw {
         let dict = new_dict();
         let svc = CFString::new(service);
 
+        // SAFETY: Large unsafe block covering the entire batch-fetch lifecycle.
+        // `dict` from new_dict() is valid. All CF objects follow Create/Get Rule:
+        // - kc_array: Create Rule, released immediately after SecItemCopyMatching
+        // - dict: Create Rule, released immediately after SecItemCopyMatching
+        // - result: Create Rule (CFArray), released at end of function
+        // - item_dict entries: Get Rule (valid while result CFArray lives)
+        // - data_ptr from CopyContent: freed with SecKeychainItemFreeContent
         unsafe {
             CFDictionarySetValue(dict, kSecClass as _, kSecClassGenericPassword as _);
             CFDictionarySetValue(dict, kSecAttrService as _, svc.as_concrete_TypeRef() as _);
@@ -726,6 +778,7 @@ mod keychain_raw {
             }
 
             // Result is a CFArray of CFDictionaries (each with attrs + ref)
+            // CoreFoundation helpers for iterating the result CFArray.
             unsafe extern "C" {
                 fn CFArrayGetCount(array: *const c_void) -> isize;
                 fn CFArrayGetValueAtIndex(array: *const c_void, idx: isize) -> *const c_void;
@@ -842,8 +895,12 @@ impl KeychainStore {
     /// Extract the account name (kSecAttrAccount) from a CFDictionary.
     /// Returns None if the attribute is missing or not a valid string.
     fn extract_account(dict: &core_foundation::dictionary::CFDictionary) -> Option<String> {
+        // SAFETY: kSecAttrAccount is a framework static (Get Rule — no ownership
+        // transfer). wrap_under_get_rule is correct: we don't own the CFString.
         let account_key = unsafe { CFString::wrap_under_get_rule(kSecAttrAccount) };
         let account_ref = dict.find(account_key.as_CFTypeRef())?;
+        // SAFETY: account_ref is a CFString (Get Rule from dict.find).
+        // wrap_under_get_rule is correct: dict owns the value.
         let account = unsafe { CFString::wrap_under_get_rule(*account_ref as _) }.to_string();
         Some(account)
     }
@@ -975,6 +1032,8 @@ impl KeyStore for KeychainStore {
 
             // Release the access ref if we created one
             if !access.is_null() {
+                // SAFETY: access was returned by build_access() (Create Rule),
+                // retain count == 1. CFRelease is safe here.
                 unsafe {
                     unsafe extern "C" {
                         fn CFRelease(cf: *const c_void);
