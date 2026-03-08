@@ -180,6 +180,9 @@ mod keychain_raw {
     use super::*;
     use core_foundation::boolean::CFBoolean;
     use core_foundation::data::CFData;
+
+    /// Per-item result from batch fetch: account name + raw data or error.
+    type ItemDataResult = (String, std::result::Result<Vec<u8>, Error>);
     use security_framework_sys::item::{
         kSecAttrService, kSecAttrSynchronizable, kSecAttrSynchronizableAny, kSecClass,
         kSecClassGenericPassword, kSecReturnData, kSecValueData,
@@ -645,7 +648,7 @@ mod keychain_raw {
     pub(super) fn list_with_refs_v3(
         keychain: &security_framework::os::macos::keychain::SecKeychain,
         service: &str,
-    ) -> Result<Vec<(String, std::result::Result<Vec<u8>, Error>)>> {
+    ) -> Result<Vec<ItemDataResult>> {
         use core_foundation::base::TCFType;
         use core_foundation::boolean::CFBoolean;
         use security_framework::os::macos::keychain::SecKeychain;
