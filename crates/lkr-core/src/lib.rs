@@ -7,7 +7,8 @@ pub mod usage;
 
 pub use error::{Error, Result};
 pub use keymanager::{
-    KeyEntry, KeyKind, KeyStore, KeychainStore, MigrateKeyResult, MigrateResult, mask_value,
+    KeyEntry, KeyKind, KeyStatus, KeyStore, KeychainStore, MigrateKeyResult, MigrateResult,
+    mask_value,
 };
 pub use template::{GenResult, Resolution, check_gitignore, generate, key_to_env_var};
 pub use usage::{

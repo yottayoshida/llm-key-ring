@@ -200,8 +200,13 @@ fn generate_env(store: &impl KeyStore, content: &str) -> Result<GenResult> {
 fn build_provider_map(
     entries: &[crate::keymanager::KeyEntry],
 ) -> BTreeMap<String, (String, Vec<String>)> {
+    use crate::keymanager::KeyStatus;
     let mut map: BTreeMap<String, (String, Vec<String>)> = BTreeMap::new();
     for entry in entries {
+        // Skip ACL-blocked keys — they cannot be read for template injection.
+        if entry.status == KeyStatus::AclBlocked {
+            continue;
+        }
         map.entry(entry.provider.clone())
             .and_modify(|(_, alternatives)| alternatives.push(entry.name.clone()))
             .or_insert_with(|| (entry.name.clone(), vec![entry.name.clone()]));

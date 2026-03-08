@@ -57,6 +57,17 @@ struct StoredEntry {
     kind: KeyKind,
 }
 
+/// Status of a key in the list output.
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum KeyStatus {
+    /// Key is accessible and readable.
+    Ok,
+    /// Key exists but cannot be read (ACL mismatch — binary fingerprint changed).
+    /// Run `lkr harden` to re-apply ACL with the current binary.
+    AclBlocked,
+}
+
 /// Public key entry returned by list().
 #[derive(Debug, Clone, Serialize)]
 pub struct KeyEntry {
@@ -66,10 +77,20 @@ pub struct KeyEntry {
     pub provider: String,
     /// Label portion, e.g. "prod"
     pub label: String,
-    /// Key kind
-    pub kind: KeyKind,
-    /// Masked value, e.g. "sk-...abcd"
+    /// Key kind (None if ACL-blocked and kind cannot be read)
+    pub kind: Option<KeyKind>,
+    /// Masked value, e.g. "sk-...abcd" (empty if ACL-blocked)
     pub masked_value: String,
+    /// Key status
+    pub status: KeyStatus,
+}
+
+impl KeyEntry {
+    /// Human-readable kind string. Returns `"?"` for ACL-blocked keys
+    /// whose kind cannot be determined.
+    pub fn kind_display(&self) -> String {
+        self.kind.map_or("?".into(), |k| k.to_string())
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -605,20 +626,48 @@ mod keychain_raw {
         Ok(())
     }
 
-    /// List all items in Custom Keychain (v0.3.0).
+    // list_v3 removed in v0.3.2 — replaced by list_with_refs_v3 which
+    // eliminates the N+1 re-lookup and surfaces ACL-blocked keys.
+
+    /// Batch-fetch all items from Custom Keychain with refs + attributes.
     ///
-    /// Uses `SecItemCopyMatching` with `kSecMatchSearchList` to scope
-    /// the search to the Custom Keychain only.
-    pub(super) fn list_v3(
+    /// Uses `kSecReturnRef + kSecReturnAttributes + kSecMatchLimitAll` to get
+    /// all item refs in a single `SecItemCopyMatching` call, then reads data
+    /// per-ref via `SecKeychainItemCopyContent`. This eliminates the re-lookup
+    /// cost of `SecKeychainFindGenericPassword` that `list_v3` + `get_v3` had.
+    ///
+    /// Returns `(account_name, Ok(data_bytes))` for accessible items and
+    /// `(account_name, Err(error))` for ACL-blocked items.
+    ///
+    /// # Safety
+    /// Calls Security.framework FFI functions. All pointer lifetimes are
+    /// scoped within this function.
+    pub(super) fn list_with_refs_v3(
         keychain: &security_framework::os::macos::keychain::SecKeychain,
         service: &str,
-    ) -> Result<Vec<String>> {
+    ) -> Result<Vec<(String, std::result::Result<Vec<u8>, Error>)>> {
         use core_foundation::base::TCFType;
         use core_foundation::boolean::CFBoolean;
         use security_framework::os::macos::keychain::SecKeychain;
 
         let _guard = SecKeychain::disable_user_interaction()
             .map_err(|e| Error::Keychain(format!("Failed to disable user interaction: {e}")))?;
+
+        #[link(name = "Security", kind = "framework")]
+        unsafe extern "C" {
+            static kSecReturnAttributes: *const c_void;
+            static kSecReturnRef: *const c_void;
+            static kSecMatchLimit: *const c_void;
+            static kSecMatchLimitAll: *const c_void;
+            static kSecValueRef: *const c_void;
+            fn SecKeychainItemCopyContent(
+                item_ref: *const c_void,
+                item_class: *mut u32,
+                attr_list: *mut SecKeychainAttributeList,
+                length: *mut u32,
+                out_data: *mut *mut c_void,
+            ) -> i32;
+        }
 
         // Build CFArray with single keychain for kSecMatchSearchList
         unsafe extern "C" {
@@ -629,14 +678,6 @@ mod keychain_raw {
             ) -> *mut c_void;
             fn CFArrayAppendValue(array: *mut c_void, value: *const c_void);
             static kCFTypeArrayCallBacks: c_void;
-        }
-
-        // Also need kSecReturnAttributes and kSecMatchLimit
-        #[link(name = "Security", kind = "framework")]
-        unsafe extern "C" {
-            static kSecReturnAttributes: *const c_void;
-            static kSecMatchLimit: *const c_void;
-            static kSecMatchLimitAll: *const c_void;
         }
 
         let dict = new_dict();
@@ -650,6 +691,11 @@ mod keychain_raw {
                 kSecReturnAttributes as _,
                 CFBoolean::true_value().as_CFTypeRef(),
             );
+            CFDictionarySetValue(
+                dict,
+                kSecReturnRef as _,
+                CFBoolean::true_value().as_CFTypeRef(),
+            );
             CFDictionarySetValue(dict, kSecMatchLimit as _, kSecMatchLimitAll as _);
 
             // Scope to Custom Keychain only
@@ -660,11 +706,13 @@ mod keychain_raw {
 
             let mut result: *const c_void = ptr::null();
             let status = SecItemCopyMatching(dict as _, &mut result as *mut _ as *mut _);
+
+            // Release query dict + keychain array immediately — they are no
+            // longer needed regardless of success or failure.
             CFRelease(dict as _);
             CFRelease(kc_array as _);
 
-            if status == -25300 {
-                // errSecItemNotFound — no items
+            if status == crate::error::os_status::ERR_SEC_ITEM_NOT_FOUND {
                 return Ok(vec![]);
             }
             if status != 0 {
@@ -674,7 +722,7 @@ mod keychain_raw {
                 return Ok(vec![]);
             }
 
-            // Result is a CFArray of CFDictionaries
+            // Result is a CFArray of CFDictionaries (each with attrs + ref)
             unsafe extern "C" {
                 fn CFArrayGetCount(array: *const c_void) -> isize;
                 fn CFArrayGetValueAtIndex(array: *const c_void, idx: isize) -> *const c_void;
@@ -683,28 +731,72 @@ mod keychain_raw {
             }
 
             let count = CFArrayGetCount(result);
-            let mut accounts = Vec::new();
+            let mut items = Vec::with_capacity(count as usize);
 
             for i in 0..count {
                 let item_dict = CFArrayGetValueAtIndex(result, i);
+
+                // Extract account name from attributes
                 let acct_ref = CFDictionaryGetValue(item_dict, kSecAttrAccount as _);
-                if !acct_ref.is_null() {
-                    // Try fast path: CFStringGetCStringPtr
+                let account = if !acct_ref.is_null() {
                     let cstr = CFStringGetCStringPtr(acct_ref, 0x0800_0100); // UTF-8
                     if !cstr.is_null() {
-                        if let Ok(s) = std::ffi::CStr::from_ptr(cstr).to_str() {
-                            accounts.push(s.to_string());
-                        }
+                        std::ffi::CStr::from_ptr(cstr)
+                            .to_str()
+                            .unwrap_or("")
+                            .to_string()
                     } else {
-                        // Fallback: wrap as CFString
-                        let cf_str = CFString::wrap_under_get_rule(acct_ref as _);
-                        accounts.push(cf_str.to_string());
+                        CFString::wrap_under_get_rule(acct_ref as _).to_string()
                     }
+                } else {
+                    continue; // Skip items with no account name
+                };
+
+                // Extract SecKeychainItemRef from dict
+                let item_ref = CFDictionaryGetValue(item_dict, kSecValueRef as _);
+                if item_ref.is_null() {
+                    items.push((account, Err(Error::Keychain("No item ref".into()))));
+                    continue;
+                }
+
+                // Read data from the item ref
+                let mut data_len: u32 = 0;
+                let mut data_ptr: *mut c_void = ptr::null_mut();
+                let read_status = SecKeychainItemCopyContent(
+                    item_ref,
+                    ptr::null_mut(),
+                    ptr::null_mut(),
+                    &mut data_len,
+                    &mut data_ptr,
+                );
+
+                if read_status == 0 && !data_ptr.is_null() {
+                    // SAFETY: data_ptr is valid for data_len bytes, allocated by
+                    // Security.framework. We copy immediately and free.
+                    let bytes =
+                        std::slice::from_raw_parts(data_ptr as *const u8, data_len as usize)
+                            .to_vec();
+                    SecKeychainItemFreeContent(ptr::null(), data_ptr as _);
+                    items.push((account, Ok(bytes)));
+                } else if read_status == 0 {
+                    // Success status but null data — should not happen per Apple docs,
+                    // but handle defensively.
+                    items.push((account, Err(Error::Keychain("null data returned".into()))));
+                } else if read_status == crate::error::os_status::ERR_SEC_AUTH_FAILED
+                    || read_status == crate::error::os_status::ERR_SEC_INTERACTION_NOT_ALLOWED
+                {
+                    // -25293 (errSecAuthFailed) from SecKeychainItemCopyContent
+                    // -25308 (errSecInteractionNotAllowed) from SecKeychainFindGenericPassword
+                    // Both indicate ACL mismatch when user interaction is disabled.
+                    items.push((account, Err(Error::AclMismatch)));
+                } else {
+                    let err = os_status_to_error(read_status, &account);
+                    items.push((account, Err(err)));
                 }
             }
 
             CFRelease(result);
-            Ok(accounts)
+            Ok(items)
         }
     }
 }
@@ -764,8 +856,8 @@ impl KeychainStore {
 pub struct MigrateKeyResult {
     /// Key name (e.g. "openai:prod")
     pub name: String,
-    /// Key kind
-    pub kind: KeyKind,
+    /// Key kind (None if the key was ACL-blocked and kind could not be read)
+    pub kind: Option<KeyKind>,
     /// Whether the migration succeeded
     pub success: bool,
     /// Error message if failed
@@ -945,22 +1037,53 @@ impl KeyStore for KeychainStore {
 
     fn list(&self, include_admin: bool) -> Result<Vec<KeyEntry>> {
         if let Some(kc) = &self.custom_keychain {
-            // v0.3.0: List from Custom Keychain via kSecMatchSearchList
-            let accounts = keychain_raw::list_v3(kc, &self.service)?;
+            // v0.3.0+: Batch fetch refs + per-ref data read.
+            // Eliminates re-lookup overhead and makes ACL-blocked keys visible.
+            let items = keychain_raw::list_with_refs_v3(kc, &self.service)?;
             let mut entries = Vec::new();
-            for account in accounts {
-                if let Ok((value, kind)) = self.get(&account) {
-                    if !include_admin && kind == KeyKind::Admin {
-                        continue;
-                    }
-                    if let Ok((provider, label)) = validate_name(&account) {
+            for (account, data_result) in items {
+                let Ok((provider, label)) = validate_name(&account) else {
+                    continue;
+                };
+                match data_result {
+                    Ok(bytes) => {
+                        // Parse JSON to extract kind and value
+                        let json = match String::from_utf8(bytes) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        };
+                        let stored: StoredEntry = match serde_json::from_str(&json) {
+                            Ok(s) => s,
+                            Err(_) => continue,
+                        };
+                        if !include_admin && stored.kind == KeyKind::Admin {
+                            continue;
+                        }
                         entries.push(KeyEntry {
                             name: account,
                             provider,
                             label,
-                            kind,
-                            masked_value: mask_value(&value),
+                            kind: Some(stored.kind),
+                            masked_value: mask_value(&stored.value),
+                            status: KeyStatus::Ok,
                         });
+                    }
+                    Err(Error::AclMismatch) => {
+                        // ACL-blocked: include with warning status instead of silently skipping
+                        entries.push(KeyEntry {
+                            name: account,
+                            provider,
+                            label,
+                            kind: None,
+                            masked_value: String::new(),
+                            status: KeyStatus::AclBlocked,
+                        });
+                    }
+                    Err(_) => {
+                        // Other errors (null data, UTF-8 decode, JSON corruption):
+                        // intentionally skipped — these are data integrity issues
+                        // not fixable by the user. Rare in practice.
+                        continue;
                     }
                 }
             }
@@ -996,8 +1119,9 @@ impl KeyStore for KeychainStore {
                             name: account,
                             provider,
                             label,
-                            kind,
+                            kind: Some(kind),
                             masked_value: mask_value(&value),
+                            status: KeyStatus::Ok,
                         });
                     }
                 }
@@ -1095,8 +1219,9 @@ impl KeyStore for MockStore {
                     name: name.clone(),
                     provider,
                     label,
-                    kind: v.kind,
+                    kind: Some(v.kind),
                     masked_value: mask_value(&v.value),
+                    status: KeyStatus::Ok,
                 })
             })
             .collect();
