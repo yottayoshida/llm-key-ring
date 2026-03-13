@@ -1194,10 +1194,23 @@ impl KeyStore for KeychainStore {
     }
 
     fn exists(&self, name: &str) -> Result<bool> {
-        match self.get(name) {
-            Ok(_) => Ok(true),
-            Err(Error::KeyNotFound { .. }) => Ok(false),
-            Err(e) => Err(e),
+        if let Some(kc) = &self.custom_keychain {
+            // Check custom keychain directly, without legacy fallback.
+            // This avoids the circular error where get() returns a
+            // "run lkr migrate" message during migration itself.
+            match keychain_raw::get_v3(kc, &self.service, name) {
+                Ok(_) => Ok(true),
+                Err(Error::KeyNotFound { .. }) => Ok(false),
+                Err(Error::AclMismatch) => Ok(true), // key exists but ACL blocks read
+                Err(e) => Err(e),
+            }
+        } else {
+            // Legacy mode (no custom keychain)
+            match keychain_raw::get(&self.service, name) {
+                Ok(_) => Ok(true),
+                Err(Error::KeyNotFound { .. }) => Ok(false),
+                Err(e) => Err(e),
+            }
         }
     }
 }
