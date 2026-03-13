@@ -354,8 +354,9 @@ enabling kind-based access control without separate metadata storage.
 |---------|---------------|
 | **v0.2.0** | Keychain attribute hardening + comprehensive TTY guard |
 | **v0.3.0** | Custom Keychain + Legacy ACL via Pure FFI (3-layer defense: isolation + cdhash authorization + binary integrity) |
-| **v0.3.1** (current) | Security hardening: ACL fail-closed, zeroize-on-drop, `-25308` auto-diagnosis |
-| v0.3.2 | Operational quality: shell completions, Homebrew tap, `lkr config lock-timeout` |
+| **v0.3.1** | Security hardening: ACL fail-closed, zeroize-on-drop, `-25308` auto-diagnosis |
+| **v0.3.2** (current) | Operational quality: list N+1 fix, CLI module split, Homebrew tap |
+| v0.3.3 | Diagnostics: `lkr doctor` (search list pollution, ACL/cdhash integrity check) |
 | v0.4.0 | MCP server with scoped access tokens |
 
 ## Reporting Security Issues
