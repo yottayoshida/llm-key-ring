@@ -45,6 +45,10 @@ Requires macOS (uses native Keychain). Source build requires Rust 1.85+.
 
 > **Note**: After upgrading (`brew upgrade lkr` or `cargo install --force`), run `lkr harden`
 > to refresh Keychain ACL for the new binary.
+>
+> **Known issue (v0.3.3)**: `lkr harden` currently fails after binary update due to an ACL
+> chicken-and-egg problem ([#13](https://github.com/yottayoshida/llm-key-ring/issues/13)).
+> Fix planned for v0.3.4.
 
 ## Usage
 
