@@ -32,13 +32,19 @@ $ lkr gen .env.example -o .env       # Generate config from template
 ## Install
 
 ```bash
+# Homebrew (recommended)
+brew install yottayoshida/tap/lkr
+
 # From source
 git clone https://github.com/yottayoshida/llm-key-ring.git
 cd llm-key-ring
 cargo install --path crates/lkr-cli
 ```
 
-Requires Rust 1.85+ and macOS (uses native Keychain).
+Requires macOS (uses native Keychain). Source build requires Rust 1.85+.
+
+> **Note**: After upgrading (`brew upgrade lkr` or `cargo install --force`), run `lkr harden`
+> to refresh Keychain ACL for the new binary.
 
 ## Usage
 
