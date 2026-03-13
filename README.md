@@ -352,8 +352,9 @@ remain readable via v0.2.x fallback until you manually remove them.
 | v0.2.2 | Docs & Roadmap | Roadmap update, v0.3.0 upgrade guide preview |
 | **v0.3.0** | **Security: 3-Layer Defense** | Custom Keychain (`lkr.keychain-db`) + Legacy ACL via Pure FFI + cdhash. **Breaking change** — see below |
 | **v0.3.1** | **Security Hardening** | ACL fail-closed, `keychain_path()` safety, `StoredEntry` zeroize-on-drop, `-25308` auto-diagnosis |
-| **v0.3.2** (current) | **Operational Quality** | List N+1 fix, CLI module split, unsafe SAFETY docs, Homebrew tap |
-| v0.3.3 | Diagnostics | `lkr doctor` (Keychain health check) |
+| **v0.3.2** | **Operational Quality** | List N+1 fix, CLI module split, unsafe SAFETY docs, Homebrew tap |
+| **v0.3.3** (current) | **Bug Fix** | `lkr migrate` circular error fix |
+| v0.3.4 | Diagnostics | `lkr doctor` (Keychain health check) |
 | v0.4.0 | MCP Server | IDE integration for secure key access |
 
 ## Development
