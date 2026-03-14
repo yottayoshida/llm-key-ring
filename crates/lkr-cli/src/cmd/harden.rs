@@ -20,8 +20,8 @@ pub(crate) fn cmd_harden(store: &KeychainStore, dry_run: bool) -> lkr_core::Resu
             eprintln!("    {} ({})", entry.name, entry.kind_display());
         }
         eprintln!();
-        eprintln!("  Note: Running without --dry-run will show a macOS authorization");
-        eprintln!("  dialog for each key whose ACL no longer matches this binary.");
+        eprintln!("  Note: Running without --dry-run will re-apply ACL to each key.");
+        eprintln!("  macOS may show an authorization dialog if needed.");
         eprintln!("\n  Run `lkr harden` (without --dry-run) to apply.");
         return Ok(());
     }
@@ -29,11 +29,8 @@ pub(crate) fn cmd_harden(store: &KeychainStore, dry_run: bool) -> lkr_core::Resu
     // --- Pre-flight briefing ---
     eprintln!("Hardening {} key(s)...", total);
     eprintln!();
-    eprintln!("  macOS will show an authorization dialog for each key whose ACL");
-    eprintln!("  no longer matches this binary (e.g. after brew upgrade).");
-    eprintln!();
-    eprintln!("  Tip: Click \"Always Allow\" to avoid repeated prompts for");
-    eprintln!("  the same key on future reads.");
+    eprintln!("  Re-applying ACL for the current binary. macOS may show an");
+    eprintln!("  authorization dialog if the keychain requires it.");
     eprintln!();
 
     // --- Harden loop: interactive-get → delete → set with fresh ACL ---
@@ -106,8 +103,7 @@ pub(crate) fn cmd_harden(store: &KeychainStore, dry_run: bool) -> lkr_core::Resu
 
     if success_count > 0 && skip_count == 0 && fail_count == 0 {
         eprintln!();
-        eprintln!("  All keys hardened successfully. If you clicked \"Always Allow\",");
-        eprintln!("  future `lkr get` calls will work without any dialog.");
+        eprintln!("  All keys hardened successfully.");
     }
 
     Ok(())
