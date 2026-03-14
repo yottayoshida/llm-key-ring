@@ -572,15 +572,14 @@ mod keychain_raw {
 
         // Only acquire the interaction-guard when non-interactive.
         // The guard is held until this scope ends, suppressing macOS dialogs.
-        let _guard = if !interactive {
-            Some(
-                SecKeychain::disable_user_interaction().map_err(|e| {
+        let _guard =
+            if !interactive {
+                Some(SecKeychain::disable_user_interaction().map_err(|e| {
                     Error::Keychain(format!("Failed to disable user interaction: {e}"))
-                })?,
-            )
-        } else {
-            None
-        };
+                })?)
+            } else {
+                None
+            };
 
         let svc_bytes = service.as_bytes();
         let acct_bytes = account.as_bytes();

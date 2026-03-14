@@ -55,12 +55,8 @@ pub(crate) fn cmd_harden(store: &KeychainStore, dry_run: bool) -> lkr_core::Resu
             }
             Err(Error::InteractionNotAllowed) => {
                 eprintln!("FAILED");
-                eprintln!(
-                    "         `lkr harden` requires a GUI environment (macOS desktop)."
-                );
-                eprintln!(
-                    "         It cannot run over SSH, in CI, or as a launchd service."
-                );
+                eprintln!("         `lkr harden` requires a GUI environment (macOS desktop).");
+                eprintln!("         It cannot run over SSH, in CI, or as a launchd service.");
                 fail_count += 1;
                 continue;
             }
@@ -79,9 +75,7 @@ pub(crate) fn cmd_harden(store: &KeychainStore, dry_run: bool) -> lkr_core::Resu
             }
             Err(e) => {
                 eprintln!("FAILED to re-create: {}", e);
-                eprintln!(
-                    "         ⚠ The key may have been deleted during this operation."
-                );
+                eprintln!("         ⚠ The key may have been deleted during this operation.");
                 eprintln!(
                     "         Recovery: `lkr set {} --kind {}` to re-register.",
                     entry.name, kind
