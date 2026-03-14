@@ -9,25 +9,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- **`lkr harden` ACL chicken-and-egg**: after `brew upgrade`, the binary's cdhash changes and all keys become ACL-blocked. `harden` now uses interactive Keychain access (macOS authorization dialog) to read key values before re-creating them with a fresh ACL. Previously, `harden` tried non-interactive reads, which failed immediately on every key
+- **`lkr harden` ACL chicken-and-egg**: after `brew upgrade`, the binary's cdhash changes and all keys become ACL-blocked. `harden` now uses interactive Keychain access to read key values before re-creating them with a fresh ACL. Previously, `harden` tried non-interactive reads, which failed immediately on every key
+- **`harden` delete/set failed with PasswordWrong**: `delete_v3` and `set_v3` used `disable_user_interaction`, which blocked ACL-mismatched operations. Added interactive variants (`delete_v3_interactive`, `set_v3_interactive`) used by `harden`
+- **`exists()` misreported PasswordWrong**: when `get_v3` returned `-25293` with null `item_ref`, the ACL mismatch check was skipped, causing `exists()` to propagate `PasswordWrong` instead of returning `true`. Now treats `PasswordWrong` as `exists=true` in custom keychain context
 - **`-25293` misdiagnosed as wrong password**: `errSecAuthFailed` from `SecKeychainFindGenericPassword` is now checked for ACL cdhash mismatch (same as `-25308`), returning `AclMismatch` instead of `PasswordWrong`
 - **`-128` error mapping**: `errSecUserCanceled` now maps to `Error::UserCanceled` (dedicated variant) instead of a generic `Error::Keychain` string
 
 ### Changed
 
 - `lkr harden` UX overhaul:
-  - Pre-flight briefing explains upcoming macOS dialogs and recommends "Always Allow"
   - Progress counter: `[1/5] key-name — hardened / skipped / FAILED`
-  - Dialog deny → `skipped (denied)` with re-run guidance
   - Set failure → warns about potential key loss with `lkr set` recovery instructions
-  - GUI-less environment (SSH, CI, launchd) → dedicated error message
-  - `--dry-run` now warns about dialog prompts in live mode
+  - `--dry-run` lists keys and explains what will happen
+  - Messages updated to reflect custom keychain behavior (dialogs may not appear)
 - SECURITY.md roadmap: v0.3.4 = harden fix, v0.3.5 = doctor (shifted)
 
 ### Security
 
-- `get_interactive()` is `pub` + `#[doc(hidden)]` on `KeychainStore` — not on the `KeyStore` trait. This prevents accidental use outside `lkr harden`. Normal reads remain non-interactive
-- Note: macOS "Always Allow" granularity (per-cdhash vs per-app) is not fully verified. `set` rebuilds explicit ACL regardless, so the final security posture is correct
+- `get_interactive()` and `set_interactive()` are `pub` + `#[doc(hidden)]` on `KeychainStore` — not on the `KeyStore` trait. This prevents accidental use outside `lkr harden`. Normal reads/writes remain non-interactive
+- Custom keychains bypass ACL checks when unlocked; `harden` still re-applies ACL for defense-in-depth
 
 ## [0.3.3] - 2026-03-13
 
