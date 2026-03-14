@@ -5,6 +5,30 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.4] - 2026-03-14
+
+### Fixed
+
+- **`lkr harden` ACL chicken-and-egg**: after `brew upgrade`, the binary's cdhash changes and all keys become ACL-blocked. `harden` now uses interactive Keychain access (macOS authorization dialog) to read key values before re-creating them with a fresh ACL. Previously, `harden` tried non-interactive reads, which failed immediately on every key
+- **`-25293` misdiagnosed as wrong password**: `errSecAuthFailed` from `SecKeychainFindGenericPassword` is now checked for ACL cdhash mismatch (same as `-25308`), returning `AclMismatch` instead of `PasswordWrong`
+- **`-128` error mapping**: `errSecUserCanceled` now maps to `Error::UserCanceled` (dedicated variant) instead of a generic `Error::Keychain` string
+
+### Changed
+
+- `lkr harden` UX overhaul:
+  - Pre-flight briefing explains upcoming macOS dialogs and recommends "Always Allow"
+  - Progress counter: `[1/5] key-name — hardened / skipped / FAILED`
+  - Dialog deny → `skipped (denied)` with re-run guidance
+  - Set failure → warns about potential key loss with `lkr set` recovery instructions
+  - GUI-less environment (SSH, CI, launchd) → dedicated error message
+  - `--dry-run` now warns about dialog prompts in live mode
+- SECURITY.md roadmap: v0.3.4 = harden fix, v0.3.5 = doctor (shifted)
+
+### Security
+
+- `get_interactive()` is `pub` + `#[doc(hidden)]` on `KeychainStore` — not on the `KeyStore` trait. This prevents accidental use outside `lkr harden`. Normal reads remain non-interactive
+- Note: macOS "Always Allow" granularity (per-cdhash vs per-app) is not fully verified. `set` rebuilds explicit ACL regardless, so the final security posture is correct
+
 ## [0.3.3] - 2026-03-13
 
 ### Fixed

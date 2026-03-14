@@ -357,7 +357,8 @@ enabling kind-based access control without separate metadata storage.
 | **v0.3.1** | Security hardening: ACL fail-closed, zeroize-on-drop, `-25308` auto-diagnosis |
 | **v0.3.2** | Operational quality: list N+1 fix, CLI module split, Homebrew tap |
 | **v0.3.3** (current) | Bug fix: `lkr migrate` circular error |
-| v0.3.4 | Diagnostics: `lkr doctor` (search list pollution, ACL/cdhash integrity check) |
+| v0.3.4 | Fix: `lkr harden` ACL chicken-and-egg — interactive get for cdhash mismatch recovery |
+| v0.3.5 | Diagnostics: `lkr doctor` (search list pollution, ACL/cdhash integrity check) |
 | v0.4.0 | MCP server with scoped access tokens |
 
 ## Reporting Security Issues

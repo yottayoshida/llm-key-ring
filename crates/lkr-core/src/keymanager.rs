@@ -307,9 +307,7 @@ mod keychain_raw {
             ERR_SEC_DECODE_ERROR => Error::Keychain(
                 "Failed to decode keychain data. The keychain file may be corrupted.".into(),
             ),
-            ERR_SEC_USER_CANCELED => Error::Keychain(
-                "Operation was canceled. This may indicate a GUI dialog was suppressed.".into(),
-            ),
+            ERR_SEC_USER_CANCELED => Error::UserCanceled,
             _ => Error::Keychain(format!("Keychain error: OSStatus {status}")),
         }
     }
@@ -531,18 +529,58 @@ mod keychain_raw {
 
     /// Retrieve password bytes from Custom Keychain (v0.3.0).
     ///
-    /// Uses `SecKeychainFindGenericPassword` scoped to the given keychain.
-    /// Returns the raw bytes and optionally the item ref (for ACL diagnosis).
+    /// Non-interactive: user-interaction is disabled so ACL-blocked keys
+    /// return `Error::AclMismatch` instead of prompting a macOS dialog.
     pub(super) fn get_v3(
         keychain: &security_framework::os::macos::keychain::SecKeychain,
         service: &str,
         account: &str,
     ) -> Result<Vec<u8>> {
+        get_v3_inner(keychain, service, account, false)
+    }
+
+    /// Retrieve password bytes with user-interaction enabled.
+    ///
+    /// When ACL cdhash no longer matches the running binary (e.g. after
+    /// `brew upgrade`), macOS will show a one-time "Allow" dialog per key.
+    ///
+    /// # Security
+    /// This is an escape hatch for `lkr harden` only.  Normal `lkr get`
+    /// must always use `get_v3` (non-interactive) so that no dialog is
+    /// shown during programmatic access.
+    pub(super) fn get_v3_interactive(
+        keychain: &security_framework::os::macos::keychain::SecKeychain,
+        service: &str,
+        account: &str,
+    ) -> Result<Vec<u8>> {
+        get_v3_inner(keychain, service, account, true)
+    }
+
+    /// Inner implementation shared by `get_v3` / `get_v3_interactive`.
+    ///
+    /// `interactive`:
+    ///   - `false` — disable user-interaction (default for all reads)
+    ///   - `true`  — allow macOS to present an authorization dialog
+    fn get_v3_inner(
+        keychain: &security_framework::os::macos::keychain::SecKeychain,
+        service: &str,
+        account: &str,
+        interactive: bool,
+    ) -> Result<Vec<u8>> {
         use core_foundation::base::TCFType;
         use security_framework::os::macos::keychain::SecKeychain;
 
-        let _guard = SecKeychain::disable_user_interaction()
-            .map_err(|e| Error::Keychain(format!("Failed to disable user interaction: {e}")))?;
+        // Only acquire the interaction-guard when non-interactive.
+        // The guard is held until this scope ends, suppressing macOS dialogs.
+        let _guard = if !interactive {
+            Some(
+                SecKeychain::disable_user_interaction().map_err(|e| {
+                    Error::Keychain(format!("Failed to disable user interaction: {e}"))
+                })?,
+            )
+        } else {
+            None
+        };
 
         let svc_bytes = service.as_bytes();
         let acct_bytes = account.as_bytes();
@@ -569,8 +607,11 @@ mod keychain_raw {
         };
 
         if status != 0 {
-            // Harden -25308: distinguish ACL mismatch from keychain-locked
-            if status == crate::error::os_status::ERR_SEC_INTERACTION_NOT_ALLOWED
+            // -25308 (InteractionNotAllowed) or -25293 (AuthFailed): may
+            // indicate ACL cdhash mismatch when user-interaction is disabled.
+            // Check the item's ACL to distinguish from genuine auth errors.
+            if (status == crate::error::os_status::ERR_SEC_INTERACTION_NOT_ALLOWED
+                || status == crate::error::os_status::ERR_SEC_AUTH_FAILED)
                 && !item_ref.is_null()
             {
                 // SAFETY: item_ref is non-null (checked above), valid
@@ -892,6 +933,41 @@ impl KeychainStore {
         self.custom_keychain.is_some()
     }
 
+    /// Read a key value via interactive macOS dialog (allows "Allow" prompt).
+    ///
+    /// # Security
+    /// **This is an escape hatch for `lkr harden` only.**  It bypasses the
+    /// `disable_user_interaction` guard so that macOS can present a keychain
+    /// authorization dialog when the binary's cdhash no longer matches the
+    /// ACL (e.g. after `brew upgrade`).
+    ///
+    /// Normal key reads must always go through [`KeyStore::get`] which keeps
+    /// user-interaction disabled.
+    #[doc(hidden)]
+    pub fn get_interactive(&self, name: &str) -> Result<(Zeroizing<String>, KeyKind)> {
+        validate_name(name)?;
+
+        let kc = self.custom_keychain.as_ref().ok_or_else(|| {
+            Error::Keychain("get_interactive requires v0.3.0 Custom Keychain".into())
+        })?;
+
+        let bytes = keychain_raw::get_v3_interactive(kc, &self.service, name)?;
+        Self::parse_stored_bytes(bytes)
+    }
+
+    /// Parse raw Keychain bytes into (value, kind).
+    /// Shared by `get` and `get_interactive` to avoid duplication.
+    fn parse_stored_bytes(bytes: Vec<u8>) -> Result<(Zeroizing<String>, KeyKind)> {
+        let json = Zeroizing::new(
+            String::from_utf8(bytes)
+                .map_err(|e| Error::Keychain(format!("Invalid UTF-8 in key data: {e}")))?,
+        );
+        let mut stored: StoredEntry = serde_json::from_str(&json)
+            .map_err(|e| Error::Keychain(format!("Failed to deserialize stored entry: {e}")))?;
+        let value = std::mem::take(&mut stored.value);
+        Ok((Zeroizing::new(value), stored.kind))
+    }
+
     /// Extract the account name (kSecAttrAccount) from a CFDictionary.
     /// Returns None if the attribute is missing or not a valid string.
     fn extract_account(dict: &core_foundation::dictionary::CFDictionary) -> Option<String> {
@@ -1076,16 +1152,7 @@ impl KeyStore for KeychainStore {
             keychain_raw::get(&self.service, name)?
         };
 
-        let json = Zeroizing::new(
-            String::from_utf8(bytes)
-                .map_err(|e| Error::Keychain(format!("Invalid UTF-8 in Keychain: {}", e)))?,
-        );
-
-        let mut stored: StoredEntry = serde_json::from_str(&json)
-            .map_err(|e| Error::Keychain(format!("Failed to deserialize: {}", e)))?;
-
-        let value = std::mem::take(&mut stored.value);
-        Ok((Zeroizing::new(value), stored.kind))
+        Self::parse_stored_bytes(bytes)
     }
 
     fn delete(&self, name: &str) -> Result<()> {
