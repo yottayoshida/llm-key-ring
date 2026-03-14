@@ -67,8 +67,9 @@ pub(crate) fn cmd_harden(store: &KeychainStore, dry_run: bool) -> lkr_core::Resu
             }
         };
 
-        // Step 2: Re-create with fresh ACL (set with force deletes + re-creates)
-        match store.set(&entry.name, &value, kind, true) {
+        // Step 2: Re-create with fresh ACL (interactive: allows macOS dialog
+        // for delete/set when ACL cdhash no longer matches this binary)
+        match store.set_interactive(&entry.name, &value, kind, true) {
             Ok(()) => {
                 eprintln!("hardened");
                 success_count += 1;

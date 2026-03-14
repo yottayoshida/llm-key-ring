@@ -467,11 +467,42 @@ mod keychain_raw {
         account: &str,
         password: &[u8],
     ) -> Result<()> {
+        set_v3_inner(keychain, access, service, account, password, false)
+    }
+
+    /// Store a password with user-interaction enabled.
+    ///
+    /// Used by `lkr harden` where macOS may need to show a dialog.
+    pub(super) fn set_v3_interactive(
+        keychain: &security_framework::os::macos::keychain::SecKeychain,
+        access: *const c_void,
+        service: &str,
+        account: &str,
+        password: &[u8],
+    ) -> Result<()> {
+        set_v3_inner(keychain, access, service, account, password, true)
+    }
+
+    /// Inner implementation shared by `set_v3` / `set_v3_interactive`.
+    fn set_v3_inner(
+        keychain: &security_framework::os::macos::keychain::SecKeychain,
+        access: *const c_void,
+        service: &str,
+        account: &str,
+        password: &[u8],
+        interactive: bool,
+    ) -> Result<()> {
         use core_foundation::base::TCFType;
         use security_framework::os::macos::keychain::SecKeychain;
 
-        let _guard = SecKeychain::disable_user_interaction()
-            .map_err(|e| Error::Keychain(format!("Failed to disable user interaction: {e}")))?;
+        let _guard =
+            if !interactive {
+                Some(SecKeychain::disable_user_interaction().map_err(|e| {
+                    Error::Keychain(format!("Failed to disable user interaction: {e}"))
+                })?)
+            } else {
+                None
+            };
 
         let svc_bytes = service.as_bytes();
         let acct_bytes = account.as_bytes();
@@ -658,18 +689,46 @@ mod keychain_raw {
 
     /// Delete a key from Custom Keychain (v0.3.0).
     ///
-    /// Finds the item via `SecKeychainFindGenericPassword`, then deletes it
-    /// via `SecKeychainItemDelete`.
+    /// Non-interactive: user-interaction is disabled (default for all
+    /// programmatic operations).
     pub(super) fn delete_v3(
         keychain: &security_framework::os::macos::keychain::SecKeychain,
         service: &str,
         account: &str,
     ) -> Result<()> {
+        delete_v3_inner(keychain, service, account, false)
+    }
+
+    /// Delete a key with user-interaction enabled.
+    ///
+    /// Used by `lkr harden` where ACL cdhash no longer matches the
+    /// running binary. macOS may show a dialog to authorize deletion.
+    pub(super) fn delete_v3_interactive(
+        keychain: &security_framework::os::macos::keychain::SecKeychain,
+        service: &str,
+        account: &str,
+    ) -> Result<()> {
+        delete_v3_inner(keychain, service, account, true)
+    }
+
+    /// Inner implementation shared by `delete_v3` / `delete_v3_interactive`.
+    fn delete_v3_inner(
+        keychain: &security_framework::os::macos::keychain::SecKeychain,
+        service: &str,
+        account: &str,
+        interactive: bool,
+    ) -> Result<()> {
         use core_foundation::base::TCFType;
         use security_framework::os::macos::keychain::SecKeychain;
 
-        let _guard = SecKeychain::disable_user_interaction()
-            .map_err(|e| Error::Keychain(format!("Failed to disable user interaction: {e}")))?;
+        let _guard =
+            if !interactive {
+                Some(SecKeychain::disable_user_interaction().map_err(|e| {
+                    Error::Keychain(format!("Failed to disable user interaction: {e}"))
+                })?)
+            } else {
+                None
+            };
 
         let svc_bytes = service.as_bytes();
         let acct_bytes = account.as_bytes();
@@ -952,6 +1011,74 @@ impl KeychainStore {
 
         let bytes = keychain_raw::get_v3_interactive(kc, &self.service, name)?;
         Self::parse_stored_bytes(bytes)
+    }
+
+    /// Re-create a key with user-interaction enabled (allows macOS dialog).
+    ///
+    /// # Security
+    /// **This is an escape hatch for `lkr harden` only.** When ACL cdhash
+    /// no longer matches the running binary, non-interactive delete/set will
+    /// fail with `-25293 (errSecAuthFailed)`. This method allows macOS to
+    /// present authorization dialogs for both delete and set operations.
+    ///
+    /// Normal key writes must always go through [`KeyStore::set`] which keeps
+    /// user-interaction disabled.
+    #[doc(hidden)]
+    pub fn set_interactive(
+        &self,
+        name: &str,
+        value: &str,
+        kind: KeyKind,
+        force: bool,
+    ) -> Result<()> {
+        validate_name(name)?;
+        if value.is_empty() {
+            return Err(Error::EmptyValue);
+        }
+
+        let kc = self.custom_keychain.as_ref().ok_or_else(|| {
+            Error::Keychain("set_interactive requires v0.3.0 Custom Keychain".into())
+        })?;
+
+        let exists = self.exists(name)?;
+        if !force && exists {
+            return Err(Error::KeyAlreadyExists {
+                name: name.to_string(),
+            });
+        }
+
+        let stored = StoredEntry {
+            value: value.to_string(),
+            kind,
+        };
+        let json = Zeroizing::new(
+            serde_json::to_string(&stored)
+                .map_err(|e| Error::Keychain(format!("Failed to serialize: {}", e)))?,
+        );
+
+        let access =
+            crate::acl::current_binary_path().and_then(|p| crate::acl::build_access(&p))?;
+
+        if exists {
+            keychain_raw::delete_v3_interactive(kc, &self.service, name)?;
+        }
+
+        let result =
+            keychain_raw::set_v3_interactive(kc, access, &self.service, name, json.as_bytes());
+
+        if !access.is_null() {
+            // SAFETY: access was returned by build_access() (Create Rule),
+            // retain count == 1. CFRelease is safe here.
+            unsafe {
+                unsafe extern "C" {
+                    fn CFRelease(cf: *const c_void);
+                }
+                CFRelease(access as _);
+            }
+        }
+
+        result?;
+        Ok(())
     }
 
     /// Parse raw Keychain bytes into (value, kind).
