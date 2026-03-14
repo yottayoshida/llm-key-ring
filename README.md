@@ -45,10 +45,6 @@ Requires macOS (uses native Keychain). Source build requires Rust 1.85+.
 
 > **Note**: After upgrading (`brew upgrade lkr` or `cargo install --force`), run `lkr harden`
 > to refresh Keychain ACL for the new binary.
->
-> **Known issue (v0.3.3)**: `lkr harden` currently fails after binary update due to an ACL
-> chicken-and-egg problem ([#13](https://github.com/yottayoshida/llm-key-ring/issues/13)).
-> Fix planned for v0.3.4.
 
 ## Usage
 
@@ -357,8 +353,9 @@ remain readable via v0.2.x fallback until you manually remove them.
 | **v0.3.0** | **Security: 3-Layer Defense** | Custom Keychain (`lkr.keychain-db`) + Legacy ACL via Pure FFI + cdhash. **Breaking change** — see below |
 | **v0.3.1** | **Security Hardening** | ACL fail-closed, `keychain_path()` safety, `StoredEntry` zeroize-on-drop, `-25308` auto-diagnosis |
 | **v0.3.2** | **Operational Quality** | List N+1 fix, CLI module split, unsafe SAFETY docs, Homebrew tap |
-| **v0.3.3** (current) | **Bug Fix** | `lkr migrate` circular error fix |
-| v0.3.4 | Diagnostics | `lkr doctor` (Keychain health check) |
+| **v0.3.3** | **Bug Fix** | `lkr migrate` circular error fix |
+| **v0.3.4** (current) | **Bug Fix** | `lkr harden` ACL fix after binary update ([#13](https://github.com/yottayoshida/llm-key-ring/issues/13)) |
+| v0.3.5 | Diagnostics | `lkr doctor` (Keychain health check) |
 | v0.4.0 | MCP Server | IDE integration for secure key access |
 
 ## Development

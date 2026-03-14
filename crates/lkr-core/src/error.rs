@@ -53,6 +53,9 @@ pub enum Error {
 
     #[error("Keychain operation requires user interaction, which is disabled")]
     InteractionNotAllowed,
+
+    #[error("Operation canceled by user")]
+    UserCanceled,
 }
 
 /// OSStatus codes from Security.framework.
@@ -128,5 +131,13 @@ mod tests {
         let msg = e.to_string();
         assert!(msg.contains("openai:prod"));
         assert!(msg.contains("--force"));
+    }
+
+    #[test]
+    fn test_error_display_user_canceled() {
+        let e = Error::UserCanceled;
+        let msg = e.to_string();
+        assert!(msg.contains("canceled"));
+        assert!(!msg.contains("cdhash"));
     }
 }
