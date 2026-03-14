@@ -1395,6 +1395,10 @@ impl KeyStore for KeychainStore {
                 Ok(_) => Ok(true),
                 Err(Error::KeyNotFound { .. }) => Ok(false),
                 Err(Error::AclMismatch) => Ok(true), // key exists but ACL blocks read
+                // When user-interaction is disabled, macOS may return
+                // errSecAuthFailed (-25293) instead of a distinct ACL error
+                // if item_ref is null. The key still exists.
+                Err(Error::PasswordWrong) => Ok(true),
                 Err(e) => Err(e),
             }
         } else {
