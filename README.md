@@ -1,5 +1,7 @@
 # LLM Key Ring (`lkr`)
 
+> **Note:** This project is no longer actively maintained. It works as-is but no new features or fixes are planned.
+
 [![CI](https://github.com/yottayoshida/llm-key-ring/actions/workflows/ci.yml/badge.svg)](https://github.com/yottayoshida/llm-key-ring/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/lkr-cli.svg)](https://crates.io/crates/lkr-cli)
 [![docs.rs](https://docs.rs/lkr-core/badge.svg)](https://docs.rs/lkr-core)
