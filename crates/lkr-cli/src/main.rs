@@ -433,6 +433,22 @@ mod tests {
         assert!(!is_tty_guard_error(&result.unwrap_err()));
     }
 
+    // -- set TTY guard tests (stdin_is_tty injection) --
+    //
+    // Note: in the real CLI, open_and_unlock() (called before dispatch) hits
+    // its own guard_stdin_tty() first, so this call site is currently
+    // unreachable via `lkr set` itself — kept as defense in depth. This test
+    // exists so removing the guard here is still caught, independent of that.
+
+    #[test]
+    fn test_set_non_tty_blocked() {
+        let store = MockStore::new();
+        // lkr set name (non-TTY) → blocked before any prompt
+        let result = crate::cmd::set::cmd_set(&store, "openai:new", "runtime", false, false);
+        assert!(result.is_err());
+        assert!(is_tty_guard_error(&result.unwrap_err()));
+    }
+
     // -- exec tests --
 
     #[test]

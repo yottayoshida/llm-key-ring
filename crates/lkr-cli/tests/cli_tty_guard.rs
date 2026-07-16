@@ -10,9 +10,11 @@
 //!   `keychain_path().exists()` before the guard — an empty marker file at
 //!   that path is enough to reach it, no valid/unlockable keychain needed.
 
+use std::io::Read;
 use std::path::PathBuf;
 use std::process::{Command, Output, Stdio};
 use std::sync::atomic::{AtomicU32, Ordering};
+use std::time::{Duration, Instant};
 
 static TEST_COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -44,15 +46,55 @@ impl Drop for IsolatedHome {
     }
 }
 
+/// Spawns `lkr` and waits with a hard timeout, so a regression that removes
+/// the TTY guard (and leaves rpassword blocking on `/dev/tty`) fails the test
+/// cleanly instead of hanging the suite. Reads stdout/stderr only after the
+/// child has exited (no separate reader thread) — fine here since this
+/// command's output is a few lines, well under a pipe's buffer size.
 fn run_lkr(home: &IsolatedHome, args: &[&str]) -> Output {
-    Command::new(env!("CARGO_BIN_EXE_lkr"))
+    let mut child = Command::new(env!("CARGO_BIN_EXE_lkr"))
         .args(args)
         .env("HOME", &home.0)
         .stdin(Stdio::null()) // no controlling terminal — not just an empty pipe
         .stdout(Stdio::piped())
         .stderr(Stdio::piped())
-        .output()
-        .unwrap_or_else(|e| panic!("spawn `lkr {}`: {e}", args.join(" ")))
+        .spawn()
+        .unwrap_or_else(|e| panic!("spawn `lkr {}`: {e}", args.join(" ")));
+
+    let deadline = Instant::now() + Duration::from_secs(10);
+    let status = loop {
+        match child.try_wait() {
+            Ok(Some(status)) => break status,
+            Ok(None) => {
+                if Instant::now() >= deadline {
+                    let _ = child.kill();
+                    let _ = child.wait();
+                    panic!(
+                        "`lkr {}` did not exit within 10s — likely hung waiting on \
+                         /dev/tty (the TTY guard may have been bypassed)",
+                        args.join(" ")
+                    );
+                }
+                std::thread::sleep(Duration::from_millis(20));
+            }
+            Err(e) => panic!("wait on `lkr {}`: {e}", args.join(" ")),
+        }
+    };
+
+    let mut stdout = Vec::new();
+    let mut stderr = Vec::new();
+    if let Some(mut s) = child.stdout.take() {
+        let _ = s.read_to_end(&mut stdout);
+    }
+    if let Some(mut s) = child.stderr.take() {
+        let _ = s.read_to_end(&mut stderr);
+    }
+
+    Output {
+        status,
+        stdout,
+        stderr,
+    }
 }
 
 fn assert_exits_2_with_tty_guard_message(output: &Output) {
