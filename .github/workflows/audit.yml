@@ -31,3 +31,9 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: EmbarkStudios/cargo-deny-action@v2
+        with:
+          # The action's own default passes --all-features, which overrides
+          # deny.toml's `[graph] all-features = false` and would silently
+          # diverge from what `cargo deny check` does locally. Empty string
+          # makes CI match the documented local repro command exactly.
+          arguments: ""

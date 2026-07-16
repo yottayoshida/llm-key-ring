@@ -3,7 +3,11 @@
 # Run locally with `cargo deny check`. CI enforcement is in
 # .github/workflows/audit.yml (on push/PR touching Cargo.lock/Cargo.toml/
 # deny.toml, plus a weekly schedule so new advisories are caught between
-# pushes).
+# pushes) via cargo-deny-action@v2, which is NOT pinned to a specific
+# cargo-deny version — last verified against cargo-deny 0.20.2 (2026-07-16).
+# If a scheduled run breaks unexpectedly, check whether cargo-deny's config
+# schema changed (it has before — see the `unsound`/`unmaintained` scope
+# enum below) before assuming a new advisory.
 #
 # Triage for a new advisory: update the dependency if possible. If it can't
 # be updated yet, add an `ignore` entry below as
@@ -19,6 +23,13 @@ feature-depth = 1
 
 # https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html
 [advisories]
+# Explicit rather than relying on upstream defaults (workspace/all,
+# respectively, as of cargo-deny 0.20.x) — this project's whole point is an
+# explicit acceptance policy, not an implicit one. "all" also covers
+# unsound/unmaintained crates that are transitive-only, which "workspace"
+# would silently miss.
+unsound = "all"
+unmaintained = "all"
 ignore = [
     # { id = "RUSTSEC-....", reason = "why + re-review by YYYY-MM-DD" },
 ]
