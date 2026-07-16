@@ -205,7 +205,7 @@ async fn fetch_openai_cost(store: &impl KeyStore) -> Result<CostReport> {
         .header("Authorization", format!("Bearer {}", *admin_key))
         .send()
         .await
-        .map_err(|e| Error::Usage(format!("OpenAI API request failed: {}", e)))?;
+        .map_err(|e| Error::Usage(request_failed_msg("OpenAI", &e)))?;
 
     // admin_key is Zeroizing<String>; explicit drop zeroes memory before response parsing
     drop(admin_key);
@@ -301,7 +301,7 @@ async fn fetch_anthropic_cost(store: &impl KeyStore) -> Result<CostReport> {
         .header("anthropic-version", "2023-06-01")
         .send()
         .await
-        .map_err(|e| Error::Usage(format!("Anthropic API request failed: {}", e)))?;
+        .map_err(|e| Error::Usage(request_failed_msg("Anthropic", &e)))?;
 
     drop(admin_key);
 
@@ -356,6 +356,16 @@ fn http_client() -> reqwest::Client {
         .timeout(Duration::from_secs(30))
         .build()
         .unwrap_or_else(|_| reqwest::Client::new())
+}
+
+/// Format a request-failure message, hinting at corporate CA/proxy environments
+/// for connection-level failures (TLS handshake included).
+fn request_failed_msg(provider: &str, e: &reqwest::Error) -> String {
+    let mut msg = format!("{provider} API request failed: {e}");
+    if e.is_connect() {
+        msg.push_str("\n  Hint: this may be caused by a corporate CA or proxy environment.");
+    }
+    msg
 }
 
 /// Check HTTP response status, returning a typed error for auth failures.
@@ -542,5 +552,28 @@ mod tests {
         let (start, end) = current_billing_period();
         assert_eq!(start.day(), 1);
         assert!(end >= start);
+    }
+
+    #[tokio::test]
+    async fn test_request_failed_msg_hints_on_connect_error() {
+        // Loopback port 1 is refused instantly, no external network required.
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let err = client.get("http://127.0.0.1:1").send().await.unwrap_err();
+        assert!(err.is_connect());
+        let msg = request_failed_msg("Test", &err);
+        assert!(msg.contains("corporate CA or proxy"));
+    }
+
+    #[tokio::test]
+    async fn test_request_failed_msg_omits_hint_on_non_connect_error() {
+        // An invalid URL yields a builder error, not a connect error — no hint expected.
+        let client = reqwest::Client::new();
+        let err = client.get("not a url").send().await.unwrap_err();
+        assert!(!err.is_connect());
+        let msg = request_failed_msg("Test", &err);
+        assert!(!msg.contains("Hint"));
     }
 }

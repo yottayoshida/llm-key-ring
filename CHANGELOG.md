@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **`lkr usage` TLS stack**: switched from `native-tls` (Secure Transport) to `rustls` with the system trust store (`rustls-native-certs`), removing the native-tls/OpenSSL dependency chain from the binary. This resolves 5 RustSec advisories that had accumulated in `Cargo.lock` (`quinn-proto` RUSTSEC-2026-0185, `rustls-webpki` RUSTSEC-2026-0104/0098/0099/0049). Root CA trust is drawn from the OS trust store rather than a bundled snapshot; if `lkr usage` fails behind a corporate proxy/CA, the error now includes a hint pointing at that possibility
+- `usage` request-failure errors now include a hint for connection-level failures that may indicate a corporate CA or proxy environment
+
 ## [0.3.4] - 2026-03-14
 
 ### Fixed
