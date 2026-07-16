@@ -1,6 +1,25 @@
 use lkr_core::KeychainStore;
 use std::io::{self, Write};
 
+/// Blocks password prompts when stdin isn't an interactive terminal.
+///
+/// rpassword reads from `/dev/tty` (not stdin) as of v7, so piped input that
+/// used to be readable in v5 now goes unread while the process waits on the
+/// terminal. Checking this upfront turns that into an immediate, explicit
+/// error instead of a hang or a silently-ignored pipe.
+pub(crate) fn guard_stdin_tty(stdin_is_tty: bool) -> lkr_core::Result<()> {
+    if stdin_is_tty {
+        return Ok(());
+    }
+    Err(lkr_core::Error::TtyGuard {
+        message: "Password prompt requires an interactive terminal.\n  \
+            Piped/non-interactive input is not supported here (prevents silent \
+            hangs and unintended empty-password retries against the Keychain).\n\n  \
+            Run this command in an interactive terminal."
+            .to_string(),
+    })
+}
+
 pub(crate) fn confirm(prompt: &str) -> bool {
     eprint!("{}", prompt);
     io::stderr().flush().ok();
@@ -49,10 +68,12 @@ pub(crate) fn schedule_clipboard_clear(seconds: u32) {
 ///
 /// Returns a v0.3.0 KeychainStore ready for operations.
 /// Prompts for password up to 3 times.
-pub(crate) fn open_and_unlock() -> lkr_core::Result<KeychainStore> {
+pub(crate) fn open_and_unlock(stdin_is_tty: bool) -> lkr_core::Result<KeychainStore> {
     if !lkr_core::custom_keychain::is_initialized() {
         return Err(lkr_core::Error::NotInitialized);
     }
+
+    guard_stdin_tty(stdin_is_tty)?;
 
     let mut kc = lkr_core::custom_keychain::open()?;
 
@@ -77,4 +98,24 @@ pub(crate) fn open_and_unlock() -> lkr_core::Result<KeychainStore> {
     }
 
     Err(lkr_core::Error::PasswordWrong)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_guard_stdin_tty_passes_when_interactive() {
+        assert!(guard_stdin_tty(true).is_ok());
+    }
+
+    #[test]
+    fn test_guard_stdin_tty_blocks_when_non_interactive() {
+        let result = guard_stdin_tty(false);
+        assert!(result.is_err());
+        assert!(matches!(
+            result.unwrap_err(),
+            lkr_core::Error::TtyGuard { .. }
+        ));
+    }
 }

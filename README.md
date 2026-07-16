@@ -53,9 +53,16 @@ Requires macOS (uses native Keychain). Source build requires Rust 1.85+.
 ### Store a key
 
 ```bash
-lkr set openai:prod          # Interactive prompt (recommended)
-pbpaste | lkr set openai:prod  # From clipboard (avoids hidden-input confusion)
+lkr set openai:prod          # Interactive prompt
 ```
+
+Password prompts require an interactive terminal — piped input (e.g. `pbpaste | lkr set ...`)
+is rejected with an explicit error rather than silently hanging or being read. This applies
+to `lkr init`'s prompts and to the Keychain-unlock prompt every other command (`set`, `get`,
+`list`, `rm`, `usage`, `gen`, `migrate`, `harden`, `exec`) shows on each invocation — there's
+no persistent "unlocked session," so any of them run non-interactively (CI, background jobs)
+will exit with this error too. This is intentional: it keeps secret entry on a path a script
+or AI agent can't feed automatically.
 
 Key names use `provider:label` format (e.g., `openai:prod`, `anthropic:main`).
 

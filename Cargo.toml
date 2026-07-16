@@ -12,10 +12,11 @@ repository = "https://github.com/yottayoshida/llm-key-ring"
 homepage = "https://github.com/yottayoshida/llm-key-ring"
 
 [workspace.dependencies]
+lkr-core = { version = "0.3.4", path = "crates/lkr-core" }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 thiserror = "2"
-tokio = { version = "1", features = ["full"] }
+tokio = { version = "1" }
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots", "json", "charset", "system-proxy"] }
 chrono = { version = "0.4", features = ["serde"] }
 zeroize = { version = "1", features = ["derive"] }

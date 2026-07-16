@@ -140,15 +140,26 @@ enum Commands {
     },
 }
 
+/// Prints a `TtyGuard` error and exits with code 2 — the dedicated exit code
+/// for non-interactive-environment blocks (piped `get`/`gen`/password-prompt
+/// input). Shared by every entry point that can hit the guard, so the
+/// mapping is one source of truth instead of a match-arm-per-call-site
+/// convention that's easy to forget to replicate.
+pub(crate) fn exit_for_tty_guard(e: &lkr_core::Error) -> ! {
+    eprintln!("Error: {}", e);
+    std::process::exit(2);
+}
+
 fn main() {
     let cli = Cli::parse();
 
     let stdout_is_tty = io::stdout().is_terminal();
+    let stdin_is_tty = io::stdin().is_terminal();
 
     // Commands that don't need an unlocked Custom Keychain
     let result = match cli.command {
         Commands::Init => {
-            cmd::init::cmd_init();
+            cmd::init::cmd_init(stdin_is_tty);
             return;
         }
         Commands::Lock => {
@@ -157,7 +168,7 @@ fn main() {
         }
         _ => {
             // All other commands need an unlocked store
-            let store = match util::open_and_unlock() {
+            let store = match util::open_and_unlock(stdin_is_tty) {
                 Ok(s) => s,
                 Err(lkr_core::Error::NotInitialized) => {
                     eprintln!("Error: LKR keychain is not initialized.");
@@ -168,6 +179,7 @@ fn main() {
                     eprintln!("Error: Wrong password. Maximum retries exceeded.");
                     std::process::exit(1);
                 }
+                Err(e @ lkr_core::Error::TtyGuard { .. }) => exit_for_tty_guard(&e),
                 Err(e) => {
                     eprintln!("Error: {}", e);
                     std::process::exit(1);
@@ -221,10 +233,7 @@ fn main() {
     if let Err(e) = result {
         // 3-layer error messages: WHAT happened / WHY / WHAT TO DO
         match &e {
-            lkr_core::Error::TtyGuard { .. } => {
-                eprintln!("Error: {}", e);
-                std::process::exit(2);
-            }
+            lkr_core::Error::TtyGuard { .. } => exit_for_tty_guard(&e),
 
             lkr_core::Error::KeyNotFound { name } => {
                 eprintln!("Error: Key '{}' not found.", name);
