@@ -10,11 +10,10 @@ on:
       - ".github/workflows/audit.yml"
   pull_request:
     branches: [main]
-    paths:
-      - "**/Cargo.toml"
-      - "Cargo.lock"
-      - "deny.toml"
-      - ".github/workflows/audit.yml"
+    # No paths filter here (unlike push, above): this is a required status
+    # check on main's branch protection, so it must run on every PR or
+    # PRs that don't touch these paths will never get a "cargo deny check"
+    # check-run and sit stuck on "Expected — waiting for status" forever.
   schedule:
     # Catches new advisories between pushes. GitHub disables scheduled
     # workflows after 60 days of repo inactivity — check this is still
