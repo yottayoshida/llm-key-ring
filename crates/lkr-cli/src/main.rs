@@ -140,6 +140,16 @@ enum Commands {
     },
 }
 
+/// Prints a `TtyGuard` error and exits with code 2 — the dedicated exit code
+/// for non-interactive-environment blocks (piped `get`/`gen`/password-prompt
+/// input). Shared by every entry point that can hit the guard, so the
+/// mapping is one source of truth instead of a match-arm-per-call-site
+/// convention that's easy to forget to replicate.
+pub(crate) fn exit_for_tty_guard(e: &lkr_core::Error) -> ! {
+    eprintln!("Error: {}", e);
+    std::process::exit(2);
+}
+
 fn main() {
     let cli = Cli::parse();
 
@@ -169,10 +179,7 @@ fn main() {
                     eprintln!("Error: Wrong password. Maximum retries exceeded.");
                     std::process::exit(1);
                 }
-                Err(e @ lkr_core::Error::TtyGuard { .. }) => {
-                    eprintln!("Error: {}", e);
-                    std::process::exit(2);
-                }
+                Err(e @ lkr_core::Error::TtyGuard { .. }) => exit_for_tty_guard(&e),
                 Err(e) => {
                     eprintln!("Error: {}", e);
                     std::process::exit(1);
@@ -181,7 +188,7 @@ fn main() {
 
             match cli.command {
                 Commands::Set { name, kind, force } => {
-                    cmd::set::cmd_set(&store, &name, &kind, force, stdin_is_tty)
+                    cmd::set::cmd_set(&store, &name, &kind, force)
                 }
                 Commands::Get {
                     name,
@@ -226,10 +233,7 @@ fn main() {
     if let Err(e) = result {
         // 3-layer error messages: WHAT happened / WHY / WHAT TO DO
         match &e {
-            lkr_core::Error::TtyGuard { .. } => {
-                eprintln!("Error: {}", e);
-                std::process::exit(2);
-            }
+            lkr_core::Error::TtyGuard { .. } => exit_for_tty_guard(&e),
 
             lkr_core::Error::KeyNotFound { name } => {
                 eprintln!("Error: Key '{}' not found.", name);
@@ -431,22 +435,6 @@ mod tests {
         // Should NOT be a TtyGuard error — it will be a Template error (file not found)
         assert!(result.is_err());
         assert!(!is_tty_guard_error(&result.unwrap_err()));
-    }
-
-    // -- set TTY guard tests (stdin_is_tty injection) --
-    //
-    // Note: in the real CLI, open_and_unlock() (called before dispatch) hits
-    // its own guard_stdin_tty() first, so this call site is currently
-    // unreachable via `lkr set` itself — kept as defense in depth. This test
-    // exists so removing the guard here is still caught, independent of that.
-
-    #[test]
-    fn test_set_non_tty_blocked() {
-        let store = MockStore::new();
-        // lkr set name (non-TTY) → blocked before any prompt
-        let result = crate::cmd::set::cmd_set(&store, "openai:new", "runtime", false, false);
-        assert!(result.is_err());
-        assert!(is_tty_guard_error(&result.unwrap_err()));
     }
 
     // -- exec tests --

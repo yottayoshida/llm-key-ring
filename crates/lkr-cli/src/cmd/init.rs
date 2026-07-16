@@ -11,8 +11,7 @@ pub(crate) fn cmd_init(stdin_is_tty: bool) {
     }
 
     if let Err(e) = crate::util::guard_stdin_tty(stdin_is_tty) {
-        eprintln!("Error: {}", e);
-        std::process::exit(2);
+        crate::exit_for_tty_guard(&e);
     }
 
     eprintln!("Creating LKR secure keychain...");
