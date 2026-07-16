@@ -361,8 +361,19 @@ fn http_client() -> reqwest::Client {
 /// Format a request-failure message, hinting at corporate CA/proxy environments
 /// for connection-level failures (TLS handshake included).
 fn request_failed_msg(provider: &str, e: &reqwest::Error) -> String {
-    let mut msg = format!("{provider} API request failed: {e}");
-    if e.is_connect() {
+    request_failed_msg_from_parts(provider, e, e.is_connect())
+}
+
+/// Pure formatting logic behind [`request_failed_msg`], split out so the
+/// hint-vs-no-hint branch can be tested with deterministic inputs instead of
+/// a live `reqwest::Error`.
+fn request_failed_msg_from_parts(
+    provider: &str,
+    err: impl std::fmt::Display,
+    is_connect: bool,
+) -> String {
+    let mut msg = format!("{provider} API request failed: {err}");
+    if is_connect {
         msg.push_str("\n  Hint: this may be caused by a corporate CA or proxy environment.");
     }
     msg
@@ -554,9 +565,40 @@ mod tests {
         assert!(end >= start);
     }
 
+    // -- request_failed_msg_from_parts: pure logic, deterministic inputs --
+
+    #[test]
+    fn test_request_failed_msg_from_parts_connect_error() {
+        let msg = request_failed_msg_from_parts("OpenAI", "connection refused", true);
+        assert_eq!(
+            msg,
+            "OpenAI API request failed: connection refused\n  \
+             Hint: this may be caused by a corporate CA or proxy environment."
+        );
+    }
+
+    #[test]
+    fn test_request_failed_msg_from_parts_non_connect_error() {
+        let msg = request_failed_msg_from_parts("Anthropic", "invalid response", false);
+        assert_eq!(msg, "Anthropic API request failed: invalid response");
+    }
+
+    #[test]
+    fn test_request_failed_msg_from_parts_preserves_arbitrary_provider() {
+        // Guards against the provider argument being dropped or hardcoded.
+        let msg = request_failed_msg_from_parts("SomeOtherVendor", "boom", false);
+        assert!(msg.starts_with("SomeOtherVendor API request failed: boom"));
+    }
+
+    // -- request_failed_msg: wiring against a real reqwest::Error --
+    // Assertions here stay loose (substring only) since reqwest's Display
+    // text for a live error isn't something this crate should hard-code;
+    // exact message shape is covered by the pure tests above.
+
     #[tokio::test]
-    async fn test_request_failed_msg_hints_on_connect_error() {
-        // Loopback port 1 is refused instantly, no external network required.
+    async fn test_request_failed_msg_wires_real_connect_error() {
+        // Loopback port 1 is refused instantly (ECONNREFUSED) — no external
+        // network required, deterministic on every platform CI runs on.
         let client = reqwest::Client::builder()
             .timeout(Duration::from_secs(2))
             .build()
@@ -568,7 +610,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn test_request_failed_msg_omits_hint_on_non_connect_error() {
+    async fn test_request_failed_msg_wires_real_non_connect_error() {
         // An invalid URL yields a builder error, not a connect error — no hint expected.
         let client = reqwest::Client::new();
         let err = client.get("not a url").send().await.unwrap_err();
