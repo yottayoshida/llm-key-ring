@@ -1,13 +1,18 @@
 use std::io::{self, Write};
 
 /// Initialize the LKR secure keychain.
-pub(crate) fn cmd_init() {
+pub(crate) fn cmd_init(stdin_is_tty: bool) {
     if lkr_core::custom_keychain::is_initialized() {
         eprintln!("LKR keychain is already initialized.");
         if let Ok(path) = lkr_core::custom_keychain::keychain_path() {
             eprintln!("  Path: {}", path.display());
         }
         return;
+    }
+
+    if let Err(e) = crate::util::guard_stdin_tty(stdin_is_tty) {
+        eprintln!("Error: {}", e);
+        std::process::exit(2);
     }
 
     eprintln!("Creating LKR secure keychain...");

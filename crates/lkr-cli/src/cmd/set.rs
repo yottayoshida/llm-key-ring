@@ -7,6 +7,7 @@ pub(crate) fn cmd_set(
     name: &str,
     kind_str: &str,
     force: bool,
+    stdin_is_tty: bool,
 ) -> lkr_core::Result<()> {
     let kind: KeyKind = kind_str
         .parse()
@@ -14,6 +15,8 @@ pub(crate) fn cmd_set(
             name: name.to_string(),
             reason,
         })?;
+
+    crate::util::guard_stdin_tty(stdin_is_tty)?;
 
     // Read value from prompt (not CLI args — prevents shell history exposure)
     // Wrapped in Zeroizing to zero memory on drop.

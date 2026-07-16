@@ -144,11 +144,12 @@ fn main() {
     let cli = Cli::parse();
 
     let stdout_is_tty = io::stdout().is_terminal();
+    let stdin_is_tty = io::stdin().is_terminal();
 
     // Commands that don't need an unlocked Custom Keychain
     let result = match cli.command {
         Commands::Init => {
-            cmd::init::cmd_init();
+            cmd::init::cmd_init(stdin_is_tty);
             return;
         }
         Commands::Lock => {
@@ -157,7 +158,7 @@ fn main() {
         }
         _ => {
             // All other commands need an unlocked store
-            let store = match util::open_and_unlock() {
+            let store = match util::open_and_unlock(stdin_is_tty) {
                 Ok(s) => s,
                 Err(lkr_core::Error::NotInitialized) => {
                     eprintln!("Error: LKR keychain is not initialized.");
@@ -168,6 +169,10 @@ fn main() {
                     eprintln!("Error: Wrong password. Maximum retries exceeded.");
                     std::process::exit(1);
                 }
+                Err(e @ lkr_core::Error::TtyGuard { .. }) => {
+                    eprintln!("Error: {}", e);
+                    std::process::exit(2);
+                }
                 Err(e) => {
                     eprintln!("Error: {}", e);
                     std::process::exit(1);
@@ -176,7 +181,7 @@ fn main() {
 
             match cli.command {
                 Commands::Set { name, kind, force } => {
-                    cmd::set::cmd_set(&store, &name, &kind, force)
+                    cmd::set::cmd_set(&store, &name, &kind, force, stdin_is_tty)
                 }
                 Commands::Get {
                     name,
