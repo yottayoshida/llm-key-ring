@@ -1,0 +1,66 @@
+# cargo-deny policy for llm-key-ring.
+#
+# Run locally with `cargo deny check`. CI enforcement is in
+# .github/workflows/audit.yml (on push/PR touching Cargo.lock/Cargo.toml/
+# deny.toml, plus a weekly schedule so new advisories are caught between
+# pushes).
+#
+# Triage for a new advisory: update the dependency if possible. If it can't
+# be updated yet, add an `ignore` entry below as
+#   { id = "RUSTSEC-....", reason = "why, and a re-review date" }
+# — never a bare ID with no reason.
+
+[graph]
+all-features = false
+no-default-features = false
+
+[output]
+feature-depth = 1
+
+# https://embarkstudios.github.io/cargo-deny/checks/advisories/cfg.html
+[advisories]
+ignore = [
+    # { id = "RUSTSEC-....", reason = "why + re-review by YYYY-MM-DD" },
+]
+
+# https://embarkstudios.github.io/cargo-deny/checks/licenses/cfg.html
+[licenses]
+# The full SPDX identifier set actually present in the resolved dependency
+# tree, per `cargo deny list`. Re-run that command and update this list if
+# a new dependency introduces a license not already covered here.
+allow = [
+    "0BSD",
+    "Apache-2.0",
+    "BSD-2-Clause",
+    "BSD-3-Clause",
+    "BSL-1.0",
+    "ISC",
+    "MIT",
+    "Unicode-3.0",
+    "Unlicense",
+    "Zlib",
+]
+confidence-threshold = 0.8
+
+[licenses.private]
+ignore = false
+
+# https://embarkstudios.github.io/cargo-deny/checks/bans/cfg.html
+[bans]
+# A handful of duplicate transitive versions already exist (windows-sys,
+# windows_x86_64_msvc, etc., pulled in by different dependency lines) —
+# warn rather than block on those, but never allow a new wildcard ("*")
+# version requirement to slip in.
+multiple-versions = "warn"
+wildcards = "deny"
+highlight = "all"
+workspace-default-features = "allow"
+external-default-features = "allow"
+allow-workspace = false
+
+# https://embarkstudios.github.io/cargo-deny/checks/sources/cfg.html
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []

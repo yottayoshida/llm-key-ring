@@ -13,6 +13,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Password prompts require an interactive terminal**: `lkr init`'s prompts, and the Keychain-unlock prompt shown by every other command (`set`, `get`, `list`, `rm`, `usage`, `gen`, `migrate`, `harden`, `exec` — there is no persistent unlocked session, each invocation prompts fresh), now reject piped/non-interactive stdin with an explicit error instead of hanging or silently retrying. Previously, piping input (e.g. `pbpaste | lkr set ...`) into these commands could result in repeated failed unlock attempts against the Keychain with no clear explanation. **This means non-interactive automation of any `lkr` command (CI, background jobs, scripts) now requires an interactive terminal** — run these commands interactively instead
 - `rpassword` upgraded 5 → 7 (no API changes at the call sites; behavior is now gated by the interactive-terminal check above rather than left to the library's own stdin/tty handling)
 
+### CI
+
+- Replaced the `actions-rust-lang/audit` job (push/PR only, no explicit policy) with `cargo-deny`, gated by a new `deny.toml` (advisories, licenses, bans, sources) and a weekly schedule so new advisories are caught between pushes. `cargo-deny` was chosen because `cargo-audit` doesn't read `deny.toml` — this repo had accumulated three independent recommendations to migrate during the v1.0 supply-chain audit
+
 ## [0.3.4] - 2026-03-14
 
 ### Fixed
