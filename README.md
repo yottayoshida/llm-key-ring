@@ -1,6 +1,6 @@
 # LLM Key Ring (`lkr`)
 
-> **Note:** This project is no longer actively maintained. It works as-is but no new features or fixes are planned.
+> **Status:** Actively developed toward v1.0 — see [Epic #61](https://github.com/yottayoshida/llm-key-ring/issues/61) for the roadmap and open issues.
 
 [![CI](https://github.com/yottayoshida/llm-key-ring/actions/workflows/ci.yml/badge.svg)](https://github.com/yottayoshida/llm-key-ring/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/lkr-cli.svg)](https://crates.io/crates/lkr-cli)
@@ -43,7 +43,7 @@ cd llm-key-ring
 cargo install --path crates/lkr-cli
 ```
 
-Requires macOS (uses native Keychain). Source build requires Rust 1.85+.
+Requires macOS (uses native Keychain) — see [*Why macOS-only?*](#why-macos-only) for the reason. Source build requires Rust 1.85+.
 
 > **Note**: After upgrading (`brew upgrade lkr` or `cargo install --force`), run `lkr harden`
 > to refresh Keychain ACL for the new binary.
@@ -253,9 +253,19 @@ All business logic lives in `lkr-core`. The CLI is a thin wrapper. v0.3.0 adds t
 - **`acl`**: Legacy ACL builder using `SecAccessCreate` + `SecTrustedApplicationCreateFromPath`
 - **`keychain_raw`**: Low-level item CRUD via `SecKeychainItemCreateFromContent` (with initial ACL)
 
-### Platform Support
+### Why macOS-only?
 
-Currently macOS only (uses native Keychain via `security-framework` / `security-framework-sys` direct FFI). The `KeyStore` trait abstraction is designed for future backend support (Linux `libsecret`, Windows Credential Manager).
+v1.0 is macOS-only by design, not by lack of effort. `lkr`'s actual value — the 3-layer
+defense (Custom Keychain isolation, Legacy ACL + cdhash binary integrity binding) — is
+built on macOS's CSSM Keychain internals via `security-framework` / `security-framework-sys`
+direct FFI. A Linux or Windows backend could store keys, but couldn't honor those specific
+guarantees; shipping one under the same guarantees would be a false promise. See
+[docs/SECURITY.md — Platform Dependency Risk](docs/SECURITY.md#platform-dependency-risk)
+for how this architecture is designed to survive changes *within* macOS itself.
+
+Want `lkr` on Linux or Windows anyway (with a reduced security model)? Add your use case to
+[the tracking issue](https://github.com/yottayoshida/llm-key-ring/issues/65) — it's not planned
+for v1.0, but demand shapes what comes after.
 
 ### Keychain Storage
 
@@ -364,8 +374,7 @@ remain readable via v0.2.x fallback until you manually remove them.
 | **v0.3.2** | **Operational Quality** | List N+1 fix, CLI module split, unsafe SAFETY docs, Homebrew tap |
 | **v0.3.3** | **Bug Fix** | `lkr migrate` circular error fix |
 | **v0.3.4** (current) | **Bug Fix** | `lkr harden` ACL fix after binary update ([#13](https://github.com/yottayoshida/llm-key-ring/issues/13)) |
-| v0.3.5 | Diagnostics | `lkr doctor` (Keychain health check) |
-| v0.4.0 | MCP Server | IDE integration for secure key access |
+| v1.0 | Verifiable S/A-tier OSS | See [Epic #61](https://github.com/yottayoshida/llm-key-ring/issues/61) for the current roadmap and open issues |
 
 ## Development
 
