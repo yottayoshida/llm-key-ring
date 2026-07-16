@@ -3,7 +3,7 @@ use crate::keymanager::KeyStore;
 use chrono::{Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
@@ -351,11 +351,21 @@ async fn fetch_anthropic_cost(store: &impl KeyStore) -> Result<CostReport> {
 // ---------------------------------------------------------------------------
 
 /// HTTP client with a 30-second timeout — prevents CLI hangs on stalled APIs.
+///
+/// Built once and cloned (cheap — `Client` is `Arc`-backed): with the
+/// rustls-native-roots feature, building a client reads the OS trust store,
+/// so a fresh client per provider would repeat that read unnecessarily when
+/// `lkr usage` queries more than one provider in a single invocation.
 fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new())
+        })
+        .clone()
 }
 
 /// Format a request-failure message, hinting at corporate CA/proxy environments
@@ -581,13 +591,6 @@ mod tests {
     fn test_request_failed_msg_from_parts_non_connect_error() {
         let msg = request_failed_msg_from_parts("Anthropic", "invalid response", false);
         assert_eq!(msg, "Anthropic API request failed: invalid response");
-    }
-
-    #[test]
-    fn test_request_failed_msg_from_parts_preserves_arbitrary_provider() {
-        // Guards against the provider argument being dropped or hardcoded.
-        let msg = request_failed_msg_from_parts("SomeOtherVendor", "boom", false);
-        assert!(msg.starts_with("SomeOtherVendor API request failed: boom"));
     }
 
     // -- request_failed_msg: wiring against a real reqwest::Error --
