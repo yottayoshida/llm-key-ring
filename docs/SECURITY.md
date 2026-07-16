@@ -113,8 +113,43 @@ AI agent's context window.
 | `lkr exec -- cmd` | Pass (silent) | **Pass** (warning) | Safe: keys in env vars only |
 | `lkr exec -- cmd` (0 keys) | **Warn** | **Warn** | Always warns when no keys matched |
 
-**Detection method**: `std::io::IsTerminal` (wraps `isatty(2)` on stdout fd).
+**Detection method**: `std::io::IsTerminal` (wraps `isatty(2)` on stdout fd, per-command as above).
 Environment variables (`TERM`, `CI`, etc.) are NOT checked — only the file descriptor.
+
+**Note on the "Non-TTY: Pass" rows above (post dependency-hygiene update)**: `get --json`
+(masked), `get --force-plain`, `gen --force`, and `exec` all require an unlocked Keychain
+store first, and Keychain unlock itself now has its *own* stdin-side guard (below) that
+blocks in non-interactive environments regardless of these commands' own stdout-side
+logic. In practice, none of these rows are reachable in a non-interactive shell today —
+the process exits (2) at the unlock step before dispatching to any of these commands.
+This does not change the stdout-side guard design above (kept as defense in depth for a
+future unlock-caching mechanism), but it does mean CI/CD automation that relied on piping
+the Keychain password into stdin for `lkr exec` no longer works — a deliberate, accepted
+tradeoff (see the stdin guard below), not an oversight.
+
+### Stdin Guard: Keychain Unlock / Password Prompts (dependency-hygiene update)
+
+Separately from the stdout-side guard above, all password *prompts* — Keychain unlock
+(`open_and_unlock`, used by every command except `init`/`lock`) and `lkr init`'s
+create/confirm prompts — are blocked in non-interactive environments:
+
+| Command | TTY | Non-TTY | Notes |
+|---------|:---:|:-------:|-------|
+| Keychain unlock (any command) | Pass | **Block** (exit 2) | Blocks *before* any Keychain access — no failed-unlock attempts sent |
+| `lkr init` | Pass | **Block** (exit 2) | Blocks before creating the keychain |
+
+**Detection method**: `std::io::IsTerminal` on stdin fd, checked once before any
+`rpassword::read_password()` call.
+
+**Why**: rpassword 7 reads from `/dev/tty` rather than stdin (a v5→v7 behavior change).
+Piping input that used to reach the prompt under v5 now goes unread while the process
+waits on the controlling terminal — or, if the process wasn't given a stdin destined for
+`/dev/tty` in the first place, generates repeated empty/garbage password attempts against
+the real Keychain. This guard turns that into an immediate, explicit error instead. It
+does not defend against a deliberate attacker who can allocate a pty (same residual-risk
+class as the pty TTY-guard bypass noted above) — it prevents accidental non-interactive
+misuse, not targeted brute-forcing; Keychain's own per-process retry limit (3 attempts,
+no cross-process lockout) is the only brute-force friction that exists today.
 
 **Exit code 2**: All TTY guard blocks use exit code 2, distinct from general errors (exit 1).
 
