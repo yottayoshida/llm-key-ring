@@ -3,7 +3,7 @@ use crate::keymanager::KeyStore;
 use chrono::{Datelike, NaiveDate, Utc};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use std::sync::Mutex;
+use std::sync::{Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 // ---------------------------------------------------------------------------
@@ -202,10 +202,10 @@ async fn fetch_openai_cost(store: &impl KeyStore) -> Result<CostReport> {
     let client = http_client();
     let resp = client
         .get(&url)
-        .header("Authorization", format!("Bearer {}", &*admin_key))
+        .header("Authorization", format!("Bearer {}", *admin_key))
         .send()
         .await
-        .map_err(|e| Error::Usage(format!("OpenAI API request failed: {}", e)))?;
+        .map_err(|e| Error::Usage(request_failed_msg("OpenAI", &e)))?;
 
     // admin_key is Zeroizing<String>; explicit drop zeroes memory before response parsing
     drop(admin_key);
@@ -301,7 +301,7 @@ async fn fetch_anthropic_cost(store: &impl KeyStore) -> Result<CostReport> {
         .header("anthropic-version", "2023-06-01")
         .send()
         .await
-        .map_err(|e| Error::Usage(format!("Anthropic API request failed: {}", e)))?;
+        .map_err(|e| Error::Usage(request_failed_msg("Anthropic", &e)))?;
 
     drop(admin_key);
 
@@ -351,11 +351,47 @@ async fn fetch_anthropic_cost(store: &impl KeyStore) -> Result<CostReport> {
 // ---------------------------------------------------------------------------
 
 /// HTTP client with a 30-second timeout — prevents CLI hangs on stalled APIs.
+///
+/// Built once and cloned (cheap — `Client` is `Arc`-backed): with the
+/// rustls-native-roots feature, building a client reads the OS trust store,
+/// so a fresh client per provider would repeat that read unnecessarily when
+/// `lkr usage` queries more than one provider in a single invocation.
 fn http_client() -> reqwest::Client {
-    reqwest::Client::builder()
-        .timeout(Duration::from_secs(30))
-        .build()
-        .unwrap_or_else(|_| reqwest::Client::new())
+    static CLIENT: OnceLock<reqwest::Client> = OnceLock::new();
+    CLIENT
+        .get_or_init(|| {
+            reqwest::Client::builder()
+                .timeout(Duration::from_secs(30))
+                .build()
+                .unwrap_or_else(|_| reqwest::Client::new())
+        })
+        .clone()
+}
+
+/// Format a request-failure message. For connection-level failures
+/// (`reqwest::Error::is_connect()` — covers TCP refusal/timeout, DNS
+/// resolution, and TLS handshake failures alike, not TLS specifically),
+/// appends a hint pointing at the possible causes.
+fn request_failed_msg(provider: &str, e: &reqwest::Error) -> String {
+    request_failed_msg_from_parts(provider, e, e.is_connect())
+}
+
+/// Pure formatting logic behind [`request_failed_msg`], split out so the
+/// hint-vs-no-hint branch can be tested with deterministic inputs instead of
+/// a live `reqwest::Error`.
+fn request_failed_msg_from_parts(
+    provider: &str,
+    err: impl std::fmt::Display,
+    is_connect: bool,
+) -> String {
+    let mut msg = format!("{provider} API request failed: {err}");
+    if is_connect {
+        msg.push_str(
+            "\n  Hint: could not connect — check your network/DNS, \
+             or a corporate proxy/CA if you're behind one.",
+        );
+    }
+    msg
 }
 
 /// Check HTTP response status, returning a typed error for auth failures.
@@ -542,5 +578,53 @@ mod tests {
         let (start, end) = current_billing_period();
         assert_eq!(start.day(), 1);
         assert!(end >= start);
+    }
+
+    // -- request_failed_msg_from_parts: pure logic, deterministic inputs --
+
+    #[test]
+    fn test_request_failed_msg_from_parts_connect_error() {
+        let msg = request_failed_msg_from_parts("OpenAI", "connection refused", true);
+        assert_eq!(
+            msg,
+            "OpenAI API request failed: connection refused\n  \
+             Hint: could not connect — check your network/DNS, \
+             or a corporate proxy/CA if you're behind one."
+        );
+    }
+
+    #[test]
+    fn test_request_failed_msg_from_parts_non_connect_error() {
+        let msg = request_failed_msg_from_parts("Anthropic", "invalid response", false);
+        assert_eq!(msg, "Anthropic API request failed: invalid response");
+    }
+
+    // -- request_failed_msg: wiring against a real reqwest::Error --
+    // Assertions here stay loose (substring only) since reqwest's Display
+    // text for a live error isn't something this crate should hard-code;
+    // exact message shape is covered by the pure tests above.
+
+    #[tokio::test]
+    async fn test_request_failed_msg_wires_real_connect_error() {
+        // Loopback port 1 is refused instantly (ECONNREFUSED) — no external
+        // network required, deterministic on every platform CI runs on.
+        let client = reqwest::Client::builder()
+            .timeout(Duration::from_secs(2))
+            .build()
+            .unwrap();
+        let err = client.get("http://127.0.0.1:1").send().await.unwrap_err();
+        assert!(err.is_connect());
+        let msg = request_failed_msg("Test", &err);
+        assert!(msg.contains("could not connect"));
+    }
+
+    #[tokio::test]
+    async fn test_request_failed_msg_wires_real_non_connect_error() {
+        // An invalid URL yields a builder error, not a connect error — no hint expected.
+        let client = reqwest::Client::new();
+        let err = client.get("not a url").send().await.unwrap_err();
+        assert!(!err.is_connect());
+        let msg = request_failed_msg("Test", &err);
+        assert!(!msg.contains("Hint"));
     }
 }

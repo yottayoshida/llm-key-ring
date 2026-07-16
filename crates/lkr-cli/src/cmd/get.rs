@@ -42,7 +42,7 @@ pub(crate) fn cmd_get(
 
     if plain || force_plain {
         // Raw value only, no newline — for piping
-        print!("{}", &*value);
+        print!("{}", *value);
         io::stdout().flush().ok();
         return Ok(());
     }
@@ -81,7 +81,7 @@ pub(crate) fn cmd_get(
         });
         println!("{}", serde_json::to_string_pretty(&obj).unwrap());
     } else if show {
-        println!("{}", &*value);
+        println!("{}", *value);
     } else {
         println!("  {}  ({})", mask_value(&value), kind);
     }
