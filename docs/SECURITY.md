@@ -394,8 +394,7 @@ enabling kind-based access control without separate metadata storage.
 | **v0.3.2** | Operational quality: list N+1 fix, CLI module split, Homebrew tap |
 | **v0.3.3** | Bug fix: `lkr migrate` circular error |
 | **v0.3.4** (current) | Fix: `lkr harden` ACL chicken-and-egg — interactive get/set for cdhash mismatch recovery; `exists()` `-25293` fix |
-| v0.3.5 | Diagnostics: `lkr doctor` (search list pollution, ACL/cdhash integrity check) |
-| v0.4.0 | MCP server with scoped access tokens |
+| v1.0 | Verifiable S/A-tier OSS — see [Epic #61](https://github.com/yottayoshida/llm-key-ring/issues/61) for the current roadmap and open issues |
 
 ## Reporting Security Issues
 
