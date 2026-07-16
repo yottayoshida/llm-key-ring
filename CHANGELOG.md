@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **`lkr usage` TLS stack**: switched from `native-tls` (Secure Transport) to `rustls` with the system trust store (`rustls-native-certs`), removing the native-tls/OpenSSL dependency chain from the binary. This resolves 5 RustSec advisories that had accumulated in `Cargo.lock` (`quinn-proto` RUSTSEC-2026-0185, `rustls-webpki` RUSTSEC-2026-0104/0098/0099/0049). Root CA trust is drawn from the OS trust store rather than a bundled snapshot; `usage` request-failure errors now include a hint for connection-level failures (covers network/DNS issues as well as corporate proxy/CA environments — not a diagnosis, just a pointer)
+- **`lkr usage` TLS stack**: switched from `native-tls` (Secure Transport) to `rustls` with the system trust store (`rustls-native-certs`), removing the native-tls/OpenSSL dependency chain — and the compiled-but-unused `webpki-roots` bundled snapshot — from the binary. This resolves 5 RustSec advisories that had accumulated in `Cargo.lock` (`quinn-proto` RUSTSEC-2026-0185, `rustls-webpki` RUSTSEC-2026-0104/0098/0099/0049). Root CA trust was already drawn from the OS trust store before this change (via Secure Transport) and still is now (via `rustls-native-certs`) — this is a TLS backend swap, not a change in which CAs are trusted; `usage` request-failure errors now include a hint for connection-level failures (covers network/DNS issues as well as corporate proxy/CA environments — not a diagnosis, just a pointer)
 
 ## [0.3.4] - 2026-03-14
 

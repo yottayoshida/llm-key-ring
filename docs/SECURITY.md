@@ -171,6 +171,7 @@ not a gap waiting to be fixed.
 | Child process logs env vars after `lkr exec` | LKR has no control over child behavior | Audit child programs; avoid untrusted commands |
 | Clipboard manager capturing copied keys | Third-party clipboard managers may persist history | 30s auto-clear mitigates; disable clipboard managers for sensitive use |
 | macOS deprecates Custom Keychain / CSSM format | Layer 2 (ACL) may stop working | Layer 1 (isolation) is independent; `lkr harden` serves as migration point; see Platform Dependency Risk |
+| Revoked-but-not-yet-expired TLS certificate on api.openai.com/api.anthropic.com | `lkr usage`'s TLS stack (`rustls`, since a dependency-hygiene update) does no OCSP/CRL revocation checking, unlike the previous `native-tls`/Secure Transport backend's best-effort checks | Low practical risk (both APIs use major CAs); accepted rustls-ecosystem tradeoff, not LKR-specific |
 
 ### Keychain ACL Investigation (v0.2.1 — updated v0.3.0)
 
