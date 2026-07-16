@@ -368,8 +368,10 @@ fn http_client() -> reqwest::Client {
         .clone()
 }
 
-/// Format a request-failure message, hinting at corporate CA/proxy environments
-/// for connection-level failures (TLS handshake included).
+/// Format a request-failure message. For connection-level failures
+/// (`reqwest::Error::is_connect()` — covers TCP refusal/timeout, DNS
+/// resolution, and TLS handshake failures alike, not TLS specifically),
+/// appends a hint pointing at the possible causes.
 fn request_failed_msg(provider: &str, e: &reqwest::Error) -> String {
     request_failed_msg_from_parts(provider, e, e.is_connect())
 }
@@ -384,7 +386,10 @@ fn request_failed_msg_from_parts(
 ) -> String {
     let mut msg = format!("{provider} API request failed: {err}");
     if is_connect {
-        msg.push_str("\n  Hint: this may be caused by a corporate CA or proxy environment.");
+        msg.push_str(
+            "\n  Hint: could not connect — check your network/DNS, \
+             or a corporate proxy/CA if you're behind one.",
+        );
     }
     msg
 }
@@ -583,7 +588,8 @@ mod tests {
         assert_eq!(
             msg,
             "OpenAI API request failed: connection refused\n  \
-             Hint: this may be caused by a corporate CA or proxy environment."
+             Hint: could not connect — check your network/DNS, \
+             or a corporate proxy/CA if you're behind one."
         );
     }
 
@@ -609,7 +615,7 @@ mod tests {
         let err = client.get("http://127.0.0.1:1").send().await.unwrap_err();
         assert!(err.is_connect());
         let msg = request_failed_msg("Test", &err);
-        assert!(msg.contains("corporate CA or proxy"));
+        assert!(msg.contains("could not connect"));
     }
 
     #[tokio::test]
