@@ -202,7 +202,7 @@ async fn fetch_openai_cost(store: &impl KeyStore) -> Result<CostReport> {
     let client = http_client();
     let resp = client
         .get(&url)
-        .header("Authorization", format!("Bearer {}", &*admin_key))
+        .header("Authorization", format!("Bearer {}", *admin_key))
         .send()
         .await
         .map_err(|e| Error::Usage(format!("OpenAI API request failed: {}", e)))?;

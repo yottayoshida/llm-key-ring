@@ -166,7 +166,7 @@ fn generate_env(store: &impl KeyStore, content: &str) -> Result<GenResult> {
             if let Some((key_name, value, alternatives)) =
                 resolve_env_var(store, var_name, &provider_map)
             {
-                output.push_str(&format!("{}={}\n", var_name, &*value));
+                output.push_str(&format!("{}={}\n", var_name, *value));
                 resolutions.push(Resolution {
                     placeholder: var_name.to_string(),
                     key_name: Some(key_name),
