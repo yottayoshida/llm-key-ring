@@ -1,6 +1,6 @@
 # LLM Key Ring (`lkr`)
 
-> **Status:** Actively developed toward v1.0 — see [Epic #61](https://github.com/yottayoshida/llm-key-ring/issues/61) for the roadmap and open issues.
+> **Status:** Working toward v1.0 — see [Epic #61](https://github.com/yottayoshida/llm-key-ring/issues/61) for the roadmap and current activity.
 
 [![CI](https://github.com/yottayoshida/llm-key-ring/actions/workflows/ci.yml/badge.svg)](https://github.com/yottayoshida/llm-key-ring/actions/workflows/ci.yml)
 [![crates.io](https://img.shields.io/crates/v/lkr-cli.svg)](https://crates.io/crates/lkr-cli)
